@@ -1,0 +1,10 @@
+bonjour le monde.
+bonjour shokobo.
+un mini gpt apprend a predire le token suivant.
+le modele regarde le contexte passe et ne voit pas le futur.
+l attention distribue des poids entre les tokens.
+les embeddings transforment des ids entiers en vecteurs.
+chaque position a besoin d une information d ordre.
+plus on entraine, plus la loss baisse en general.
+ce projet est volontairement petit et pedagogique.
+nous voulons comprendre chaque etape du texte jusqu aux logits.
