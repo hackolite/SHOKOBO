@@ -2,3 +2,4 @@ torch
 numpy
 matplotlib
 notebook
+# Optional BPE: install requirements-bpe.txt instead.

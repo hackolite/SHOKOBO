@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -47,13 +48,29 @@ def scaled_dot_product_attention(
 
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, embedding_dim: int, num_heads: int, dropout: float = 0.0):
+    def __init__(
+        self, embedding_dim: int, num_heads: int, dropout: float = 0.0,
+        position_encoding: str = 'learned', attention_backend: str = 'manual',
+    ):
         super().__init__()
+        for name, value in (('embedding_dim', embedding_dim), ('num_heads', num_heads)):
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f'{name} must be a positive integer.')
         if embedding_dim % num_heads != 0:
             raise ValueError('embedding_dim doit être divisible par num_heads.')
+        if position_encoding not in ('learned', 'rope'):
+            raise ValueError("position_encoding must be 'learned' or 'rope'.")
+        if attention_backend not in ('manual', 'sdpa'):
+            raise ValueError("attention_backend must be 'manual' or 'sdpa'.")
+        if not 0.0 <= dropout <= 1.0:
+            raise ValueError('dropout must be between 0 and 1.')
         self.embedding_dim = embedding_dim
         self.num_heads = num_heads
         self.head_dim = embedding_dim // num_heads
+        self.position_encoding = position_encoding
+        self.attention_backend = attention_backend
+        if position_encoding == 'rope' and self.head_dim % 2:
+            raise ValueError('RoPE requires an even head_dim.')
 
         self.q_proj = nn.Linear(embedding_dim, embedding_dim)
         self.k_proj = nn.Linear(embedding_dim, embedding_dim)
@@ -61,7 +78,45 @@ class MultiHeadSelfAttention(nn.Module):
         self.out_proj = nn.Linear(embedding_dim, embedding_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, return_attention: bool = False):
+    def _validate_past_key_value(self, past_key_value, batch_size, device, dtype=None):
+        if not isinstance(past_key_value, (tuple, list)) or len(past_key_value) != 2:
+            raise ValueError('Each cache entry must be a (key, value) pair.')
+        k, v = past_key_value
+        for tensor in (k, v):
+            if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
+                raise ValueError('Cached keys and values must be rank-4 tensors.')
+            if (tensor.shape[0] != batch_size or tensor.shape[1] != self.num_heads
+                    or tensor.shape[3] != self.head_dim):
+                raise ValueError('Cache batch size, number of heads or head dimension is invalid.')
+            if tensor.device != device or not tensor.is_floating_point():
+                raise ValueError('Cache device or dtype is invalid.')
+            if dtype is not None and tensor.dtype != dtype:
+                raise ValueError('Cache dtype must match projected keys and values.')
+        if k.shape != v.shape or k.dtype != v.dtype:
+            raise ValueError('Cached keys and values must have matching shapes and dtypes.')
+        return k.shape[2]
+
+    def _apply_rope(self, tensor: torch.Tensor, offset: int) -> torch.Tensor:
+        # Adjacent feature pairs rotate at different frequencies; cached keys are already rotated.
+        frequency = 10000.0 ** (
+            -torch.arange(0, self.head_dim, 2, device=tensor.device, dtype=torch.float32)
+            / self.head_dim
+        )
+        positions = torch.arange(
+            offset, offset + tensor.shape[2], device=tensor.device, dtype=torch.float32,
+        )
+        angles = positions[:, None] * frequency[None, :]
+        cos, sin = angles.cos().to(tensor.dtype), angles.sin().to(tensor.dtype)
+        even, odd = tensor[..., 0::2], tensor[..., 1::2]
+        return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
+
+    def forward(
+        self, x: torch.Tensor, return_attention: bool = False,
+        past_key_value=None, use_cache: bool = False,
+    ):
+        """Cache tensors have shape [batch, heads, past_tokens, head_dim]."""
+        if self.training and (use_cache or past_key_value is not None):
+            raise ValueError('KV caching is inference-only; call eval() first.')
         batch_size, sequence_length, _ = x.shape
 
         q = self.q_proj(x)
@@ -72,11 +127,49 @@ class MultiHeadSelfAttention(nn.Module):
         k = k.view(batch_size, sequence_length, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, sequence_length, self.num_heads, self.head_dim).transpose(1, 2)
 
-        mask = causal_mask(sequence_length, device=x.device).unsqueeze(0).unsqueeze(0)
-        output, weights, _ = scaled_dot_product_attention(q, k, v, mask=mask)
+        past_length = 0
+        if past_key_value is not None:
+            past_length = self._validate_past_key_value(
+                past_key_value, batch_size, k.device, k.dtype,
+            )
+        if self.position_encoding == 'rope':
+            q = self._apply_rope(q, past_length)
+            k = self._apply_rope(k, past_length)
+        if past_key_value is not None:
+            k = torch.cat((past_key_value[0], k), dim=2)
+            v = torch.cat((past_key_value[1], v), dim=2)
+
+        mask = None
+        if past_length:
+            query_positions = torch.arange(sequence_length, device=x.device) + past_length
+            key_positions = torch.arange(k.shape[2], device=x.device)
+            mask = key_positions[None, :] > query_positions[:, None]
+        output = None
+        weights = None
+        if (self.attention_backend == 'sdpa' and not return_attention
+                and hasattr(F, 'scaled_dot_product_attention')):
+            try:
+                # SDPA dispatches to its CPU math implementation when fused kernels are unavailable.
+                # Dropout remains on the merged output, not on attention probabilities.
+                output = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=None if mask is None else ~mask,
+                    dropout_p=0.0, is_causal=mask is None,
+                )
+            except (RuntimeError, NotImplementedError):
+                if x.device.type != 'cpu':
+                    raise
+        if output is None:
+            if mask is None:
+                mask = causal_mask(sequence_length, device=x.device)
+            output, weights, _ = scaled_dot_product_attention(q, k, v, mask=mask)
         output = output.transpose(1, 2).contiguous().view(batch_size, sequence_length, self.embedding_dim)
         output = self.out_proj(self.dropout(output))
 
+        if use_cache:
+            present_key_value = (k, v)
+            if return_attention:
+                return output, weights, present_key_value
+            return output, present_key_value
         if return_attention:
             return output, weights
         return output
