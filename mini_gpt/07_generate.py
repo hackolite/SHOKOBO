@@ -127,7 +127,7 @@ def load_model_and_tokenizer(
             tokenizer.unk_id = tokenizer.stoi['<unk>']
         config = checkpoint['config']
         model = MiniGPT(
-            vocab_size=len(tokenizer.itos),
+            vocab_size=tokenizer.vocab_size,
             context_length=config['context_length'],
             embedding_dim=config['embedding_dim'],
             num_heads=config['num_heads'],
