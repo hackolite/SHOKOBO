@@ -25,6 +25,9 @@ from typing import Iterable, List
 
 import torch
 
+BPE_TRAINING_CHAR_LIMIT = 1_000_000
+BPE_CHUNK_SIZE = 4096
+
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 BASE_DIR = Path(__file__).resolve().parent
 CORPUS_PATH = BASE_DIR / 'data' / 'tiny_corpus.txt'
@@ -34,7 +37,7 @@ class SimpleTokenizer:
     """Tokenizer caractère par caractère, volontairement simple et transparent."""
 
     def __init__(self, vocab: Iterable[str]):
-        unique_tokens = sorted(set(vocab))
+        unique_tokens = sorted(set(vocab) - {'<unk>'})
         self.special_tokens = ['<unk>']
         self.itos = self.special_tokens + unique_tokens
         self.stoi = {token: idx for idx, token in enumerate(self.itos)}
@@ -60,6 +63,101 @@ class SimpleTokenizer:
 
     def id_to_token(self, idx: int) -> str:
         return self.itos[idx] if 0 <= idx < self.vocab_size else '<unk>'
+
+    def to_state(self) -> dict:
+        return {'kind': 'char', 'vocab': self.itos[1:]}
+
+
+def _bpe_library():
+    try:
+        import tokenizers
+    except ImportError as exc:
+        raise ImportError(
+            'BPE requires the optional dependency: '
+            'pip install -r mini_gpt/requirements-bpe.txt'
+        ) from exc
+    return tokenizers
+
+
+class BPETokenizer:
+    """Byte-level BPE backed by Hugging Face tokenizers, with lossless UTF-8 decoding."""
+
+    def __init__(self, backend):
+        self.backend = backend
+
+    @property
+    def vocab_size(self) -> int:
+        return self.backend.get_vocab_size()
+
+    def encode(self, text: str) -> List[int]:
+        return self.backend.encode(text, add_special_tokens=False).ids
+
+    def decode(self, ids: Iterable[int]) -> str:
+        return self.backend.decode(list(ids), skip_special_tokens=False)
+
+    def to_state(self) -> dict:
+        return {'kind': 'bpe', 'tokenizer_json': self.backend.to_str()}
+
+
+def tokenizer_from_state(state: dict):
+    """Restore without fitting; BPE state contains the library's complete JSON model."""
+    if state.get('kind') == 'char':
+        return SimpleTokenizer(state['vocab'])
+    if state.get('kind') == 'bpe':
+        library = _bpe_library()
+        return BPETokenizer(library.Tokenizer.from_str(state['tokenizer_json']))
+    raise ValueError("Tokenizer state must have kind 'char' or 'bpe'.")
+
+
+def _bpe_training_chunks(text_iterator: Iterable[str]):
+    remaining = BPE_TRAINING_CHAR_LIMIT
+    for text in text_iterator:
+        for start in range(0, min(len(text), remaining), BPE_CHUNK_SIZE):
+            chunk = text[start:start + min(BPE_CHUNK_SIZE, remaining)]
+            remaining -= len(chunk)
+            yield chunk
+            if remaining == 0:
+                return
+
+
+def train_tokenizer(text_iterator: Iterable[str], kind: str = 'char', vocab_size: int = 2000):
+    """Fit on training text only, accepting a one-pass iterable of strings.
+
+    Char mode collects the Unicode alphabet and ignores vocab_size. BPE uses
+    at most the first 1,000,000 training characters, in pieces of at most 4096,
+    bounding the library trainer's word-frequency table even for giant lines.
+    Chunk boundaries prohibit cross-chunk merges. Byte-level BPE keeps all 256
+    bytes plus <unk>, so its vocabulary can exceed a requested size below 257.
+    No normalization or prefix space is added.
+    """
+    if kind == 'char':
+        alphabet = set()
+        for text in text_iterator:
+            alphabet.update(text)
+        if not alphabet:
+            raise ValueError('Cannot train a tokenizer on empty training text.')
+        return SimpleTokenizer(alphabet)
+    if kind != 'bpe':
+        raise ValueError("tokenizer kind must be 'char' or 'bpe'.")
+    if isinstance(vocab_size, bool) or not isinstance(vocab_size, int) or vocab_size < 1:
+        raise ValueError('vocab_size must be a positive integer.')
+    library = _bpe_library()
+    backend = library.Tokenizer(library.models.BPE(unk_token='<unk>'))
+    backend.pre_tokenizer = library.pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.decoder = library.decoders.ByteLevel()
+    trainer = library.trainers.BpeTrainer(
+        vocab_size=vocab_size,
+        special_tokens=['<unk>'],
+        initial_alphabet=library.pre_tokenizers.ByteLevel.alphabet(),
+        show_progress=False,
+    )
+    chunks = iter(_bpe_training_chunks(text_iterator))
+    first = next(chunks, None)
+    if first is None:
+        raise ValueError('Cannot train a tokenizer on empty training text.')
+    from itertools import chain
+    backend.train_from_iterator(chain([first], chunks), trainer=trainer)
+    return BPETokenizer(backend)
 
 
 def describe_shape(name: str, tensor: torch.Tensor, meaning: str) -> None:

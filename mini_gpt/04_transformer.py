@@ -55,17 +55,28 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, embedding_dim: int, num_heads: int, ffn_dim: int, dropout: float = 0.0):
+    def __init__(
+        self, embedding_dim: int, num_heads: int, ffn_dim: int, dropout: float = 0.0,
+        position_encoding: str = 'learned', attention_backend: str = 'manual',
+    ):
         super().__init__()
-        if embedding_dim % num_heads != 0:
-            raise ValueError('embedding_dim doit être divisible par num_heads.')
-        self.attention = MultiHeadSelfAttention(embedding_dim, num_heads, dropout=dropout)
+        if not isinstance(ffn_dim, int) or isinstance(ffn_dim, bool) or ffn_dim <= 0:
+            raise ValueError('ffn_dim must be a positive integer.')
+        self.attention = MultiHeadSelfAttention(
+            embedding_dim, num_heads, dropout=dropout,
+            position_encoding=position_encoding, attention_backend=attention_backend,
+        )
         self.norm_1 = nn.LayerNorm(embedding_dim)
         self.feed_forward = FeedForward(embedding_dim, ffn_dim, dropout=dropout)
         self.norm_2 = nn.LayerNorm(embedding_dim)
 
-    def forward(self, x: torch.Tensor, verbose: bool = False) -> torch.Tensor:
-        attn_output = self.attention(x)
+    def forward(
+        self, x: torch.Tensor, verbose: bool = False,
+        past_key_value=None, use_cache: bool = False,
+    ):
+        attn_output = self.attention(x, past_key_value=past_key_value, use_cache=use_cache)
+        if use_cache:
+            attn_output, present_key_value = attn_output
         x = self.norm_1(x + attn_output)
         if verbose:
             describe_shape('after attention + residual + norm', x, '[batch, tokens, embedding_dim]')
@@ -73,6 +84,8 @@ class TransformerBlock(nn.Module):
         x = self.norm_2(x + ffn_output)
         if verbose:
             describe_shape('after ffn + residual + norm', x, '[batch, tokens, embedding_dim]')
+        if use_cache:
+            return x, present_key_value
         return x
 
 

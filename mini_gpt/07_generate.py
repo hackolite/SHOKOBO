@@ -5,7 +5,10 @@ prompt -> tokenize -> model -> logits du dernier token -> probabilités -> proch
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import math
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -49,17 +52,38 @@ def generate(
     temperature: float = 1.0,
     top_k: Optional[int] = None,
     sample: bool = True,
+    use_cache: bool = False,
+    verbose: bool = True,
 ) -> str:
+    if max_new_tokens < 0:
+        raise ValueError('max_new_tokens must be non-negative.')
+    if not math.isfinite(temperature):
+        raise ValueError('temperature must be finite.')
     model.eval()
     token_ids = tokenizer.encode(prompt)
-    idx = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
+    if not token_ids:
+        raise ValueError('Le prompt doit contenir au moins un token.')
+    device = next(model.parameters()).device
+    idx = torch.tensor([token_ids], dtype=torch.long, device=device)
+    past_key_values = None
 
-    print(f'Prompt: {prompt!r}')
-    print(f'Prompt ids: {token_ids}')
+    if verbose:
+        print(f'Prompt: {prompt!r}')
+        print(f'Prompt ids: {token_ids}')
 
     for step in range(max_new_tokens):
         idx_cond = idx[:, -model.context_length :]
-        logits, _ = model(idx_cond)
+        if use_cache:
+            # Rebuild a full sliding window on overflow: its positions restart at zero.
+            if past_key_values is not None and past_key_values[0][0].size(-2) < model.context_length:
+                idx_cond = idx[:, -1:]
+            else:
+                past_key_values = None
+            logits, _, past_key_values = model(
+                idx_cond, past_key_values=past_key_values, use_cache=True,
+            )
+        else:
+            logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
 
         if temperature <= 0:
@@ -75,19 +99,32 @@ def generate(
             )
 
         idx = torch.cat([idx, next_token], dim=1)
-        partial_text = tokenizer.decode(idx[0].tolist())
-        print(f'step={step + 1:02d} next_token_id={next_token.item()} texte={partial_text!r}')
+        if verbose:
+            partial_text = tokenizer.decode(idx[0].tolist())
+            print(f'step={step + 1:02d} next_token_id={next_token.item()} texte={partial_text!r}')
 
     return tokenizer.decode(idx[0].tolist())
 
 
-def load_model_and_tokenizer() -> tuple[MiniGPT, SimpleTokenizer]:
-    if CHECKPOINT_PATH.exists():
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
-        tokenizer = SimpleTokenizer(checkpoint['vocab'][1:])
-        tokenizer.itos = checkpoint['vocab']
-        tokenizer.stoi = {token: idx for idx, token in enumerate(tokenizer.itos)}
-        tokenizer.unk_id = tokenizer.stoi['<unk>']
+def load_model_and_tokenizer(
+    checkpoint_path: Path = CHECKPOINT_PATH,
+    device: str = DEVICE,
+    attention_backend: Optional[str] = None,
+    precision: str = 'float32',
+) -> tuple[MiniGPT, SimpleTokenizer]:
+    if precision not in ('float32', 'bfloat16'):
+        raise ValueError('precision must be float32 or bfloat16.')
+    dtype = torch.bfloat16 if precision == 'bfloat16' else torch.float32
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.exists():
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+        if 'tokenizer' in checkpoint:
+            tokenizer = tokenizer_module.tokenizer_from_state(checkpoint['tokenizer'])
+        else:
+            tokenizer = SimpleTokenizer(checkpoint['vocab'][1:])
+            tokenizer.itos = checkpoint['vocab']
+            tokenizer.stoi = {token: idx for idx, token in enumerate(tokenizer.itos)}
+            tokenizer.unk_id = tokenizer.stoi['<unk>']
         config = checkpoint['config']
         model = MiniGPT(
             vocab_size=len(tokenizer.itos),
@@ -97,10 +134,16 @@ def load_model_and_tokenizer() -> tuple[MiniGPT, SimpleTokenizer]:
             num_layers=config['num_layers'],
             ffn_dim=config['ffn_dim'],
             dropout=config['dropout'],
-        ).to(DEVICE)
+            position_encoding=config.get('position_encoding', 'learned'),
+            attention_backend=attention_backend or config.get('attention_backend', 'manual'),
+        )
         model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device=device, dtype=dtype)
+        model.eval()
         return model, tokenizer
 
+    if checkpoint_path != CHECKPOINT_PATH:
+        raise FileNotFoundError(checkpoint_path)
     text = CORPUS_PATH.read_text(encoding='utf-8')
     tokenizer = SimpleTokenizer.from_text(text)
     model = MiniGPT(
@@ -111,27 +154,58 @@ def load_model_and_tokenizer() -> tuple[MiniGPT, SimpleTokenizer]:
         num_layers=2,
         ffn_dim=256,
         dropout=0.1,
-    ).to(DEVICE)
+        attention_backend=attention_backend or 'manual',
+    ).to(device=device, dtype=dtype)
+    model.eval()
     return model, tokenizer
 
 
 def main() -> None:
-    print(f'Using device: {DEVICE}')
-    model, tokenizer = load_model_and_tokenizer()
-    if CHECKPOINT_PATH.exists():
-        print(f'Checkpoint chargé depuis {CHECKPOINT_PATH}')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--checkpoint', type=Path, default=CHECKPOINT_PATH)
+    parser.add_argument('--device', default=DEVICE)
+    parser.add_argument('--prompt', default='bonjour ')
+    parser.add_argument('--max-new-tokens', type=int, default=20)
+    parser.add_argument('--temperature', type=float, default=0.7)
+    parser.add_argument('--top-k', type=int, default=5)
+    parser.add_argument('--greedy', action='store_true')
+    parser.add_argument('--kv-cache', action='store_true')
+    parser.add_argument('--attention-backend', choices=('manual', 'sdpa'))
+    parser.add_argument('--precision', choices=('float32', 'bfloat16'), default='float32')
+    parser.add_argument('--benchmark', action='store_true', help='Compare greedy generation with/without cache.')
+    args = parser.parse_args()
+    model, tokenizer = load_model_and_tokenizer(
+        args.checkpoint, args.device, args.attention_backend, args.precision,
+    )
+    if args.checkpoint.exists():
+        print(f'Checkpoint chargé depuis {args.checkpoint}')
     else:
         print('Aucun checkpoint trouvé: la génération utilisera un modèle aléatoire, donc le texte sera peu cohérent.')
-
-    print()
-    print('=== 1. Argmax (température 0) ===')
-    generate(model, tokenizer, prompt='bonjour ', max_new_tokens=20, temperature=0.0, top_k=None, sample=False)
-
-    print()
-    print('=== 2. Sampling pédagogique ===')
-    print('temperature petite -> distribution plus pointue; temperature grande -> plus de diversité.')
-    generate(model, tokenizer, prompt='mini ', max_new_tokens=20, temperature=0.7, top_k=5, sample=True)
-    print('Exercice: compare temperature=0.2, 0.7 et 1.2, puis top_k=None vs top_k=3.')
+    if not args.benchmark:
+        print(generate(
+            model, tokenizer, args.prompt, args.max_new_tokens,
+            args.temperature, args.top_k, sample=not args.greedy, use_cache=args.kv_cache,
+        ))
+        return
+    device = next(model.parameters()).device
+    outputs = []
+    for cache in (False, True):
+        generate(model, tokenizer, args.prompt, 1, temperature=0, use_cache=cache, verbose=False)
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+            torch.cuda.reset_peak_memory_stats(device)
+        start = time.perf_counter()
+        outputs.append(generate(
+            model, tokenizer, args.prompt, args.max_new_tokens,
+            temperature=0, use_cache=cache, verbose=False,
+        ))
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        elapsed = time.perf_counter() - start
+        peak = torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None
+        print(f'cache={cache} seconds={elapsed:.4f} tokens/s={args.max_new_tokens / elapsed:.2f} peak_cuda_bytes={peak}')
+    print(f'Greedy outputs identical: {outputs[0] == outputs[1]}')
+    print(outputs[-1])
 
 
 if __name__ == '__main__':
