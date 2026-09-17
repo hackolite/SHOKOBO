@@ -1,0 +1,185 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=22mm,headheight=14pt]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!45!black,
+  pdftitle={Comprendre et construire un MiniGPT},
+  pdfsubject={Manuel pédagogique du code SHOKOBO, niveau terminale},
+  pdfauthor={Projet SHOKOBO},
+  bookmarksnumbered=true
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlist{nosep,leftmargin=*}
+\setlength{\emergencystretch}{2em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small SHOKOBO — Comprendre un MiniGPT}
+\fancyhead[R]{\small Du lycée au code}
+\fancyfoot[C]{\thepage}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\objectif}[1]{\par\textbf{Objectif.} #1\par}
+\newcommand{\notion}[1]{\par\textbf{À comprendre.} #1\par}
+\newcommand{\exercice}[1]{\par\textbf{Exercice.} #1\par}
+\newcommand{\corrige}[1]{\par\textbf{Correction détaillée.} #1\par}
+\newcommand{\attention}[1]{\par\textbf{Point de vigilance.} #1\par}
+\newcommand{\src}[2]{%
+  {\scriptsize\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/#1}}%
+  \par{\small\texttt{\detokenize{#2}}}}
+\newcommand{\fiche}[3]{%
+  \clearpage
+  \phantomsection
+  \label{fiche:#1}
+  \addcontentsline{toc}{section}{\protect\numberline{#1}#2}
+  {\Large\bfseries Fiche #1 — #2\par}
+  \vspace{3pt}
+  {\color{black!65}#3\par}
+  \vspace{4pt}\hrule\vspace{7pt}
+}
+\lstset{
+  language=Python,
+  basicstyle=\small\ttfamily,
+  keywordstyle=\color{blue!50!black},
+  commentstyle=\color{black!60},
+  stringstyle=\color{green!30!black},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black!25},
+  tabsize=4,
+  aboveskip=7pt,
+  belowskip=7pt
+}
+\makeatletter
+\renewcommand*\l@section{\@dottedtocline{1}{0em}{2.6em}}
+\makeatother
+
+\begin{document}
+\thispagestyle{empty}
+\vspace*{14mm}
+{\large\scshape SHOKOBO · Manuel pédagogique\par}
+\vspace{13mm}
+{\Huge\bfseries Comprendre et construire un MiniGPT\par}
+\vspace{9mm}
+{\LARGE Des mathématiques de terminale\\au Transformer en PyTorch\par}
+\vspace{13mm}
+{\large 100 pages A4 · 96 fiches avec exercices corrigés\par}
+\vspace{12mm}
+\hrule
+\vspace{7mm}
+\textbf{Le fil conducteur}
+
+Un texte devient une suite d'entiers. Ces entiers désignent des vecteurs.
+L'attention combine les informations accessibles dans le passé.
+Le réseau attribue des scores aux prochains tokens. Une fonction de coût mesure
+l'erreur, puis la rétropropagation indique comment modifier ses paramètres.
+Enfin, la génération répète la prédiction, un token après l'autre.
+
+\vspace{5mm}
+\textbf{Un livre fondé sur une implémentation réelle}
+
+Ce manuel accompagne les sept scripts Python, le notebook pédagogique et les
+tests du dépôt \href{https://github.com/hackolite/SHOKOBO}{hackolite/SHOKOBO}.
+Il distingue systématiquement les principes généraux des choix précis de cette
+implémentation : tokenisation caractère ou BPE, blocs post-normalisés, positions
+apprises ou RoPE, attention manuelle ou SDPA, et cache KV à fenêtre reconstruite.
+
+\vfill
+\textbf{Périmètre de lecture :} code de référence \code{ae314c6}.
+Les exemples numériques du manuel sont didactiques, sauf mention explicite
+d'une valeur calculée à partir du code. Aucun résultat d'entraînement ni
+benchmark matériel n'est présenté comme une mesure effectuée.
+
+\medskip
+Édition française — septembre 2026.
+
+\clearpage
+{\LARGE\bfseries Mode d'emploi et conventions\par}
+\vspace{4mm}
+\textbf{À qui s'adresse ce manuel ?}
+
+Vous savez manipuler une fonction, lire une somme, calculer une dérivée simple
+et utiliser les probabilités du lycée. Vous n'avez pas besoin d'avoir étudié
+les matrices, les tenseurs, l'optimisation ou les réseaux de neurones :
+les premières fiches construisent ces notions. Une connaissance élémentaire de
+Python aide ; les objets du langage utiles au projet sont expliqués au fil du
+texte. Ce livre n'est toutefois pas un cours exhaustif du langage Python.
+
+\textbf{Comment travailler une fiche}
+
+Lisez son objectif, refaites les calculs au crayon, puis retrouvez le symbole
+indiqué sous le titre dans le fichier source. Cachez la correction avant de
+résoudre l'exercice. Les explications concernent le code exécuté, qui fait foi
+lorsqu'un schéma introductif simplifie certains détails. Une fiche occupe une
+page ; le sommaire donne à la fois son numéro et sa page physique.
+
+\textbf{Quatre parcours successifs}
+\begin{enumerate}
+  \item Fiches 1--24 : construire les outils mathématiques et comprendre
+        comment une probabilité devient une erreur à minimiser.
+  \item Fiches 25--48 : suivre le texte jusqu'aux lots de fenêtres,
+        sans contamination de la validation.
+  \item Fiches 49--72 : parcourir les embeddings, l'attention, le
+        Transformer et leurs variantes, en contrôlant chaque dimension.
+  \item Fiches 73--96 : entraîner, évaluer, sauvegarder, générer et
+        expérimenter sans confondre démonstration et performance industrielle.
+\end{enumerate}
+
+\textbf{Dictionnaire des dimensions}
+
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+Symbole & Signification \\
+\midrule
+$B$ & Nombre de fenêtres dans un lot (batch) \\
+$T$ & Longueur de la séquence actuellement traitée \\
+$C$ & Longueur maximale du contexte \\
+$V$ & Taille du vocabulaire (ne pas confondre avec les valeurs d'attention) \\
+$D$ & Dimension des représentations (embedding) \\
+$H$ & Nombre de têtes ; $d_k=D/H$ est leur dimension \\
+$F$ & Dimension cachée du réseau feed-forward \\
+$L$ & Nombre de blocs Transformer \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Les indices commencent généralement à zéro, comme en Python. Le logarithme
+est naturel : les pertes sont donc exprimées en nats. Une matrice de valeurs
+d'attention pourra être notée $V_{\mathrm{att}}$ lorsque le contexte ne suffit
+pas à la distinguer de la taille du vocabulaire.
+
+\textbf{Exécution et limites}
+
+Les chemins absolus correspondent au clone fourni ; adaptez leur racine sur
+votre ordinateur. Les commandes d'expérimentation utilisent des sorties
+séparées sous \path{/tmp} pour ne pas écraser vos checkpoints. Un modèle
+minuscule entraîné sur un petit texte n'est ni un assistant fiable ni une
+source factuelle. L'exhaustivité recherchée est celle du pipeline de ce dépôt,
+pas celle de tout l'apprentissage profond.
+
+\clearpage
+\begingroup
+\small
+\setlength{\parskip}{0pt}
+\tableofcontents
+\endgroup
+
+\input{chapitres/01-mathematiques.tex}
+\input{chapitres/02-donnees.tex}
+\input{chapitres/03-transformer.tex}
+\input{chapitres/04-pratique.tex}
+\end{document}

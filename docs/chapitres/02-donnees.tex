@@ -1,0 +1,301 @@
+\fiche{25}{Se repérer : scripts, imports et notebook}{\src{02_dataset.py}{load\_local\_module}}
+\objectif{Identifier le chemin réellement exécuté avant d'expliquer les données.}
+Le dépôt propose une progression lisible : tokenisation, jeux de données,
+attention, blocs Transformer, modèle, entraînement, génération. Cette progression
+est pédagogique, mais elle n'impose pas que chaque programme utilise exactement
+la démonstration du précédent. Pour suivre une expérience, partons de son point
+d'entrée, puis descendons vers les fonctions appelées. Le répertoire de référence
+est \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt}.
+
+\notion{Un fichier Python n'est pas toujours importable par une instruction ordinaire.}
+Les noms numérotés commencent par des chiffres : écrire une instruction
+d'importation avec ce nom comme identifiant Python serait invalide.
+La fonction étudiée construit donc un chemin depuis \code{BASE\_DIR},
+obtient une spécification avec \code{importlib.util.spec\_from\_file\_location},
+crée un objet module, puis exécute son contenu avec
+\code{spec.loader.exec\_module}. Le nom logique donné au module ne doit pas
+être confondu avec son nom de fichier. Ce mécanisme charge les définitions,
+et exécute aussi les instructions placées au niveau supérieur.
+
+La garde \code{if \_\_name\_\_ == '\_\_main\_\_'} empêche en revanche de
+lancer automatiquement la démonstration lorsque le fichier est chargé comme
+module. Ainsi, récupérer \code{NextTokenDataset} ne signifie pas afficher les
+fenêtres de son \code{main}. Le chemin est calculé relativement à
+\code{\_\_file\_\_}, non relativement au dossier depuis lequel on lance Python.
+
+\notion{Deux parcours de données coexistent.}
+La démonstration de \src{02_dataset.py}{main} lit tout le petit texte,
+apprend un tokenizer caractère et emploie \code{NextTokenDataset}.
+L'entraînement actif de \src{06_train.py}{train} appelle
+\code{prepare\_corpus}, puis \code{MemmapTokenDataset}. La fonction historique
+\code{create\_dataloaders} existe encore, mais ce n'est pas le chemin appelé
+par \code{train}. Lire seulement son découpage à 90\,\% donnerait donc une
+description incomplète du pipeline actuel.
+
+Le notebook
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/mini_gpt_pedagogique.ipynb}
+sert à explorer interactivement. L'ordre d'exécution des cellules peut laisser
+des objets anciens en mémoire ; un script relancé repart dans un nouveau
+processus. Le guide
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/README.md}
+décrit ces deux usages sans remplacer la lecture des appels effectifs.
+
+\exercice{Un lecteur affirme : « L'entraînement mélange une liste de tous les IDs
+avec la fonction historique. » Comment vérifier cette affirmation ?}
+\corrige{Suivre \code{main}, puis \code{train} dans le script d'entraînement.
+On rencontre la préparation des fichiers, les datasets memmap et un
+\code{RandomSampler} avec remise. La fonction historique n'est pas appelée.
+Il faut distinguer une définition présente dans le fichier d'une fonction
+effectivement exécutée : la proximité visuelle n'établit aucune relation d'appel.}
+
+\fiche{26}{Texte Unicode, octets et vocabulaire}{\src{01_tokenizer.py}{train\_tokenizer}}
+\objectif{Distinguer ce que l'on voit, ce que Python compte et ce que le disque stocke.}
+Un texte Python de type \code{str} est une suite de points de code Unicode.
+Un fichier UTF-8 est une suite d'octets. Un octet possède 256 valeurs possibles ;
+un point de code peut demander plusieurs octets lors de son encodage UTF-8.
+Ni l'un ni l'autre ne correspond toujours à une lettre visuelle complète :
+un accent combinant ou plusieurs signes composant un emoji peuvent participer
+à un seul graphème perçu par le lecteur.
+
+\notion{La longueur dépend de l'unité choisie.}
+Le texte original « Aé🙂 » contient trois points de code. En UTF-8, leurs
+tailles respectives sont un, deux et quatre octets. On obtient donc :
+\[
+    N_{\mathrm{caractères}}=3,\qquad N_{\mathrm{octets}}=1+2+4=7.
+\]
+Le tokenizer caractère produit ici trois IDs, mais leur stockage ultérieur
+en entiers de huit octets occupera vingt-quatre octets, hors métadonnées.
+Transformer du texte en nombres n'est donc pas automatiquement le compresser.
+La tokenisation prépare une interface pour le modèle ; sa taille disque
+dépend également du type numérique choisi.
+
+\notion{Aucune normalisation Unicode n'est appliquée.}
+Un « é » précomposé est un seul point de code ; un « e » suivi d'un accent
+aigu combinant en comporte deux. Ces formes peuvent sembler identiques à
+l'écran, mais \code{set(text)} et \code{encode} les traitent différemment.
+Le code ne les convertit pas vers une forme commune, ne met pas le texte en
+minuscules et ne retire pas les espaces. Une politique de nettoyage serait
+une décision supplémentaire, absente de cette implémentation.
+
+Le vocabulaire est une association entre unités et entiers, pas un dictionnaire
+de définitions linguistiques. Sa taille est notée \(V\).
+Un ID valide appartient à \(\{0,\ldots,V-1\}\).
+L'ID d'une lettre n'exprime ni sa fréquence ni sa proximité avec une autre
+lettre : ces entiers désigneront des lignes d'une table d'embeddings.
+La dimension \(D\) de cette table sera une autre quantité, étudiée ensuite.
+
+\attention{Dans ce chapitre, « caractère » désigne le point de code manipulé
+par Python, sauf mention explicite d'un graphème.}
+Cette convention rend les calculs reproductibles, notamment pour le découpage
+du corpus. Compter les octets du fichier ne suffit pas à retrouver la frontière
+de validation calculée en caractères.
+
+\exercice{Comparer « é » et la séquence \code{e} suivie de U+0301 :
+combien de caractères et d'octets UTF-8 chacune contient-elle ?}
+\corrige{La première contient un caractère et deux octets. La seconde contient
+deux caractères et trois octets : un pour \code{e}, deux pour l'accent.
+Sans normalisation, le tokenizer caractère peut donc produire une ou deux
+positions pour deux affichages visuellement voisins.}
+
+\fiche{27}{Construire le tokenizer caractère}{\src{01_tokenizer.py}{SimpleTokenizer}}
+\objectif{Reconstruire exactement le vocabulaire, y compris l'entrée inconnue.}
+Le constructeur accepte un itérable de chaînes. Dans l'usage caractère,
+cet itérable fournit les caractères du texte ou l'alphabet déjà collecté.
+La première opération est \code{sorted(set(vocab) - \{'<unk>'\})}.
+L'ensemble élimine les répétitions ; le tri fixe un ordre indépendant de
+l'ordre de découverte. Pour des caractères isolés, ce tri suit l'ordre Unicode,
+et non l'ordre alphabétique d'un dictionnaire français.
+
+\notion{Deux tables réciproques rendent les conversions explicites.}
+La liste \code{itos} associe un indice à un token. Le dictionnaire
+\code{stoi} associe un token à son indice. Avant les caractères triés,
+le constructeur ajoute l'entrée spéciale \code{<unk>}. Elle reçoit donc
+toujours l'ID zéro, enregistré dans \code{unk\_id}.
+Cette entrée représente une information inconnue, pas une fin de phrase,
+un remplissage de batch ou un début de document.
+
+Prenons le texte original « baba é ». Son alphabet comporte une espace,
+\code{a}, \code{b} et \code{é}. La liste construite est :
+\[
+    \mathrm{itos}=[\texttt{<unk>},\ \text{espace},\ a,\ b,\ \text{é}],
+    \qquad V=5.
+\]
+Le \code{b} reçoit l'ID 3 même s'il apparaît en premier.
+Le mot « baba » s'encode donc en \(3,2,3,2\).
+Répéter ce texte mille fois ne change pas le vocabulaire :
+les fréquences seront utiles au modèle, mais elles n'interviennent pas
+dans cette construction particulière.
+
+\notion{Apprentissage par flux et apprentissage depuis une chaîne.}
+\code{from\_text} transmet directement le texte au constructeur.
+\code{train\_tokenizer}, en mode \code{char}, parcourt au contraire les blocs
+successifs et enrichit un ensemble \code{alphabet}. Il refuse un alphabet vide,
+puis construit le même type de tokenizer. L'ordre des blocs ne change pas les
+IDs si leur ensemble de caractères reste identique. Le paramètre
+\code{vocab\_size} est ignoré dans cette branche : on ne tronque pas l'alphabet
+à une taille demandée.
+
+\attention{Le marqueur spécial est une chaîne entière.}
+Lorsque le corpus contient littéralement les cinq caractères de
+\code{<unk>}, le mode caractère les parcourt séparément. Ils ne sont pas
+reconnus comme une occurrence magique du token spécial.
+Le retrait dans le constructeur évite surtout de dupliquer ce marqueur
+si un vocabulaire fourni le contient déjà comme entrée.
+
+\exercice{Construire le vocabulaire de « cabac », puis encoder « bac ».
+Que change une demande de vocabulaire de taille 2 en mode caractère ?}
+\corrige{On obtient \code{['<unk>', 'a', 'b', 'c']}, donc \(V=4\), et
+« bac » devient \([2,1,3]\). La taille demandée ne change rien :
+les trois caractères observés et l'entrée inconnue sont conservés.}
+
+\fiche{28}{Encoder, décoder et perdre une information}{\src{01_tokenizer.py}{SimpleTokenizer}}
+\objectif{Savoir quand l'aller-retour restitue le texte et quand il ne le peut pas.}
+Encoder consiste à parcourir le texte caractère par caractère. Pour chacun,
+\code{stoi.get(char, unk\_id)} fournit soit son ID connu, soit zéro.
+Décoder parcourt les IDs, cherche les tokens correspondants, puis concatène
+leurs représentations. Dans cette dernière opération, l'entrée spéciale
+\code{<unk>} est rendue par un point d'interrogation.
+
+\notion{L'aller-retour est exact sur l'alphabet connu.}
+Construisons le tokenizer avec le texte original « ab a ».
+Sa table est \code{['<unk>', ' ', 'a', 'b']}.
+L'encodage de « ba a » donne \([3,2,1,2]\), dont le décodage redonne
+exactement « ba a ». L'espace fait partie des données au même titre que les
+lettres. Il n'est ni supprimé ni reconstruit par une règle grammaticale.
+\[
+    \operatorname{decode}(\operatorname{encode}(s))=s
+    \quad\text{si tous les caractères de }s\text{ sont connus.}
+\]
+
+En revanche, « bz » devient \([3,0]\), puis « b? ».
+Une chaîne « bΩ » suit le même trajet. Deux entrées distinctes ayant la même
+image, aucune fonction de décodage ne peut déterminer quel caractère inconnu
+était présent. Cette perte n'est pas une erreur du réseau : elle se produit
+avant son intervention. Elle illustre une application non injective,
+notion mathématique utile pour comprendre les limites d'une représentation.
+
+\notion{Les méthodes d'inspection ne rendent pas toutes la même chaîne.}
+\code{id\_to\_token(0)} retourne le marqueur \code{<unk>},
+tandis que \code{decode([0])} retourne \code{?}.
+De même, un entier négatif ou supérieur au dernier indice valide est converti
+en marqueur inconnu lors du décodage. Le test de borne empêche notamment
+qu'un indice négatif sélectionne le dernier élément, comme le ferait
+habituellement une liste Python.
+
+\attention{Un vrai point d'interrogation peut lui-même appartenir au vocabulaire.}
+L'affichage décodé ne permet alors pas de distinguer ce caractère d'un inconnu
+remplacé. Pour mesurer les inconnus, il faut compter \code{unk\_id} dans les
+IDs, pas compter les points d'interrogation du texte reconstruit.
+Le taux obtenu décrit la couverture de l'alphabet d'entraînement.
+Sur une validation contenant une nouvelle écriture, il peut être élevé,
+même si le programme fonctionne exactement comme prévu.
+
+\exercice{Avec le vocabulaire précédent, décoder \([2,-1,99,3]\), puis
+donner le résultat de \code{id\_to\_token(-1)}. Peut-on retrouver les inconnus ?}
+\corrige{Le texte est « a??b ». La méthode d'inspection retourne
+\code{<unk>}. Les deux IDs invalides ne révèlent aucun caractère initial ;
+le décodage fournit une représentation de remplacement, pas une réparation.
+Il faut conserver le texte brut si cette information doit rester accessible.}
+
+\fiche{29}{Sauvegarder l'état caractère sans réapprendre}{\src{01_tokenizer.py}{tokenizer\_from\_state}}
+\objectif{Comprendre pourquoi les poids du modèle ne suffisent pas à interpréter ses IDs.}
+Une ligne d'embedding correspond à un ID précis. Si l'on recharge les poids
+avec un vocabulaire différent, les mêmes nombres peuvent désigner d'autres
+caractères. Un modèle ayant associé la ligne 2 à \code{a} ne reconnaît pas
+spontanément que cette ligne désigne désormais \code{b}.
+Sauvegarder l'état du tokenizer fait donc partie de la sauvegarde du sens
+des données, et pas seulement du confort de programmation.
+
+\notion{Un état compact suffit pour le mode caractère.}
+\code{to\_state} renvoie un dictionnaire comportant \code{kind: 'char'} et
+la liste \code{vocab}, égale à \code{itos[1:]}.
+Le marqueur inconnu est omis parce que le constructeur le réintroduira en
+position zéro. La restauration appelle \code{SimpleTokenizer(state['vocab'])},
+sans relire le corpus ni réapprendre quoi que ce soit.
+Pour un état produit par ce constructeur, le tri reconstruit exactement
+les mêmes tables.
+
+\begin{lstlisting}[language=Python]
+state = tokenizer.to_state()
+restored = tokenizer_from_state(state)
+assert restored.encode("aba") == tokenizer.encode("aba")
+\end{lstlisting}
+
+Ce court exemple suppose les objets déjà chargés. L'égalité concerne des
+IDs, ce qui est plus exigeant que la seule égalité de taille du vocabulaire.
+Deux vocabulaires peuvent avoir dix entrées et pourtant attribuer des
+significations différentes à chacun des dix indices.
+
+Dans \src{02_dataset.py}{prepare\_corpus}, l'état est écrit en JSON UTF-8
+avec \code{ensure\_ascii=False}. Les accents peuvent ainsi rester lisibles
+dans le fichier
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/tokenizer.json}
+pour la sortie par défaut. Une sérialisation JSON avec échappements Unicode
+aurait le même sens après lecture ; ce choix concerne surtout la lisibilité.
+Dans \src{06_train.py}{train}, le checkpoint conserve également
+\code{tokenizer.to\_state()}, ainsi qu'un champ \code{vocab} historique
+pour le mode caractère.
+
+\attention{Un état enregistré n'est pas une validation complète de son contenu.}
+Le restaurateur contrôle le type annoncé par \code{kind}, mais ne transforme
+pas un dictionnaire arbitraire en état fiable. Il faut garder ensemble
+le bon tokenizer, les fichiers d'IDs et les poids correspondants.
+Modifier manuellement le vocabulaire après préparation peut rendre les fichiers
+sémantiquement incohérents sans changer leur longueur en octets.
+
+\exercice{Un état possède \code{vocab=['a', 'c']}. Quelle table sera restaurée ?
+Que se passe-t-il si l'on ajoute \code{'b'} avant de recharger les mêmes IDs ?}
+\corrige{La table initiale est \code{['<unk>', 'a', 'c']}.
+Après ajout et tri, elle devient \code{['<unk>', 'a', 'b', 'c']}.
+L'ancien ID 2, qui signifiait \code{c}, signifie alors \code{b}.
+L'absence d'erreur informatique ne garantit donc pas la cohérence du modèle.}
+
+\fiche{30}{BPE : apprendre des fusions, à la main}{\src{01_tokenizer.py}{train\_tokenizer}}
+\objectif{Comprendre le principe des paires fréquentes avant les détails de la bibliothèque.}
+Le mode caractère impose une position par caractère. BPE cherche à représenter
+des suites fréquentes par des unités plus longues. Son nom, \emph{Byte Pair
+Encoding}, rappelle une méthode fondée sur le regroupement de paires.
+Pour isoler cette idée, travaillons d'abord sur une version jouet dont les
+symboles initiaux sont des lettres. La version byte-level du dépôt sera
+précisée à la fiche suivante.
+
+\notion{Une fusion remplace deux symboles adjacents par un nouveau symbole.}
+Considérons trois occurrences séparées du mot inventé « baba ».
+Chaque occurrence commence comme \([b,a,b,a]\).
+Au total, la paire \((b,a)\) apparaît six fois et la paire \((a,b)\)
+trois fois. On choisit donc \((b,a)\), puis chaque occurrence devient
+\([ba,ba]\). La paire \((ba,ba)\) apparaît maintenant trois fois :
+une seconde fusion produit le symbole \([baba]\).
+\[
+    [b,a,b,a]\ \longrightarrow\ [ba,ba]\ \longrightarrow\ [baba].
+\]
+Les frontières entre occurrences sont ici imposées : on ne compte pas de
+paire reliant la fin d'une occurrence au début de la suivante.
+Cette hypothèse explicite évite d'attribuer au calcul des paires inexistantes
+dans l'exemple.
+
+La taille de la séquence diminue, tandis que le vocabulaire gagne des entrées.
+Les anciens symboles restent utiles pour des mots différents. Si l'on
+rencontre « bac », la fusion apprise \((b,a)\) permet \([ba,c]\),
+mais le symbole \code{baba} ne s'applique pas à toute la chaîne.
+Apprendre BPE ne revient donc pas à enregistrer seulement une liste de mots.
+
+\notion{L'ordre des fusions fait partie de l'apprentissage.}
+Lorsqu'on ajoute une fusion, les comptages pertinents évoluent.
+Des égalités de fréquence peuvent nécessiter une règle de départage.
+Notre exemple possède des maxima simples ; il ne prétend pas prédire
+les IDs ni toutes les décisions internes de la bibliothèque.
+Le code du dépôt délègue ces mécanismes à \code{tokenizers}, au lieu
+de réimplémenter les compteurs et leurs mises à jour.
+
+\attention{La compression n'est pas un score de compréhension.}
+Un symbole long très fréquent peut économiser des positions sans porter
+un sens linguistique stable. Le Transformer apprendra ensuite à prédire
+les unités obtenues. Changer de tokenizer change aussi l'unité de sa perte.
+
+\exercice{Avec deux occurrences de « abac », compter les paires initiales.
+Si l'on impose de fusionner \((a,b)\), quelle représentation obtient-on ?}
+\corrige{Les paires \((a,b)\), \((b,a)\) et \((a,c)\) apparaissent chacune
+deux fois : il y a égalité, donc aucune fusion unique n'est déductible des
+seules fréquences. Avec le choix imposé, chaque occurrence devient
+\([ab,a,c]\), soit trois tokens au lieu de quatre.}

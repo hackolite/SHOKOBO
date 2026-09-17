@@ -1,0 +1,424 @@
+\fiche{1}{Prédire le suivant : la chaîne complète}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Comprendre ce que calcule un modèle de langage avant d'étudier ses opérations.}
+
+Un texte arrive sous forme de caractères, non de nombres réels. Un
+\emph{tokeniseur} le transforme en une suite d'identifiants entiers. Dans le
+mode caractère du dépôt, un token représente généralement un caractère ;
+dans le mode BPE, il peut représenter un fragment différent. Le vocabulaire
+est l'ensemble des tokens disponibles et sa taille se note \(V\). Un
+identifiant est une étiquette : le token numéro 8 n'est pas deux fois
+plus important que le token numéro 4.
+
+La tâche est de prédire le token immédiatement suivant à partir des tokens
+déjà visibles. Pour une suite fictive \((2,5,1,4)\), une fenêtre fournit
+l'entrée \((2,5,1)\) et les cibles \((5,1,4)\). À la première position,
+le modèle doit proposer 5 en ne connaissant que 2 ; à la deuxième,
+il dispose du préfixe \((2,5)\). Le mécanisme causal empêche de consulter
+les positions futures, même lorsqu'elles sont présentes dans le tableau.
+
+\notion{La chaîne de calcul.}
+Dans \code{MiniGPT.forward}, \code{token\_embedding} transforme chaque
+identifiant en une liste de \(D\) nombres, appelée représentation.
+Le mode positionnel appris ajoute \code{position\_embedding}. Puis
+\code{blocks}, \code{final\_norm} et \code{lm\_head} produisent des scores,
+les \emph{logits}. Le mode RoPE traite autrement les positions ; cela
+ne change pas l'objectif prédictif.
+\[
+ \text{texte}\longrightarrow\text{identifiants}
+ \longrightarrow\text{représentations}
+ \longrightarrow\text{logits}\longrightarrow\text{probabilités}.
+\]
+Chaque position produit \(V\) scores, pas un identifiant directement.
+Une transformation appelée softmax donnera des probabilités positives
+dont la somme vaut un. À l'entraînement, on mesure la probabilité attribuée
+à la cible connue. En génération, on choisit un token, on l'ajoute à la
+suite, puis on recommence. Ces deux usages partagent le même prédicteur.
+
+Nous noterons \(B\) le nombre de fenêtres traitées ensemble, \(T\) leur
+longueur courante et \(C\) la capacité maximale de contexte. Sans cache,
+on doit avoir \(1\leq T\leq C\). Les \(L\) blocs transforment les
+représentations sans changer le nombre de positions. Aucun de ces nombres
+ne désigne une quantité de mots comprise par la machine.
+
+\exercice{Avec \(B=2\), \(T=3\) et \(V=4\), combien de scores et combien
+de cibles un passage produit-il ? Quelle cible correspond au dernier
+token d'entrée de notre exemple ?}
+\corrige{Chaque fenêtre fournit trois listes de quatre scores, donc
+\(2\times3\times4=24\) scores pour six cibles. La dernière entrée vaut 1,
+mais sa cible vaut 4 : recopier l'entrée ne résoudrait pas la tâche.
+Les probabilités portent sur quatre possibilités à chacune des six
+positions, non sur les six positions elles-mêmes.}
+
+\fiche{2}{Fonctions, arguments et indices Python}{\src{02_dataset.py}{NextTokenDataset}}
+\objectif{Traduire les notations mathématiques en accès à une suite Python sans décalage accidentel.}
+
+Une fonction associe une sortie à une entrée autorisée. Au lycée,
+\(f(x)=2x+1\) signifie qu'une même recette s'applique à chaque valeur
+de \(x\). Un programme peut recevoir une liste plutôt qu'un seul nombre.
+\code{SimpleTokenizer.encode}, défini dans
+\src{01_tokenizer.py}{SimpleTokenizer.encode}, reçoit un texte et renvoie
+une liste d'entiers. Son domaine n'est donc pas celui d'une fonction
+polynomiale, mais l'idée d'une transformation bien définie reste identique.
+
+Une suite mathématique peut commencer à l'indice zéro : écrivons
+\(s_0,s_1,\ldots,s_{N-1}\) pour \(N\) tokens. Python adopte précisément
+cette convention. \code{s[0]} est le premier élément, tandis que
+\code{s[N-1]} est le dernier. Les crochets indiquent un accès, pas une
+multiplication. Un indice compte les positions ; la valeur rangée à cette
+position est une information distincte.
+
+\notion{Les tranches excluent leur borne de droite.}
+L'expression \code{s[a:b]} prend les indices \(a,a+1,\ldots,b-1\).
+Si les bornes restent dans la liste et si \(b\geq a\), elle contient
+\(b-a\) éléments. Dans \code{NextTokenDataset}, la longueur de fenêtre
+est \code{context\_length}, que nous notons \(C\).
+\[
+ x_t=s_{i+t},\qquad y_t=s_{i+t+1},
+ \qquad 0\leq t<C.
+\]
+Pour \(s=(4,7,2,9,3)\), \(i=1\) et \(C=3\), l'entrée utilise les
+indices 1, 2, 3 : elle vaut \((7,2,9)\). La cible utilise les indices
+2, 3, 4 : elle vaut \((2,9,3)\). Les deux listes ont la même longueur,
+mais leurs contenus sont décalés.
+
+Il faut un token supplémentaire pour connaître la dernière cible.
+Avec un pas de déplacement égal à un, les débuts admissibles vont
+de zéro à \(N-C-1\), inclus : cela fait \(N-C\) fenêtres.
+Ne confondons pas cette borne maximale avec le nombre de fenêtres.
+Le jeu de données sur disque ajoute un paramètre de pas ; son comptage
+tient aussi compte de ce paramètre.
+
+Enfin, \code{logits[:, -1, :]} emploie un indice négatif pour sélectionner
+la dernière position. Les deux deux-points conservent les autres axes :
+ce n'est pas une sélection du dernier token du vocabulaire.
+
+\exercice{Pour \(s=(8,1,6,2,5,7)\), \(C=2\) et \(i=2\), donner
+\code{s[i:i+C]}, la cible et le nombre total de fenêtres.}
+\corrige{L'entrée vaut \((6,2)\), la cible \((2,5)\).
+Les indices de début possibles sont \(0,1,2,3\), soit \(6-2=4\)
+fenêtres. Le début 4 serait impossible : sa deuxième cible demanderait
+l'élément d'indice 6, absent de cette suite.}
+
+\fiche{3}{Sommes, moyennes et pondérations}{\src{06_train.py}{evaluate}}
+\objectif{Lire le symbole somme et comprendre pourquoi une moyenne de moyennes peut tromper.}
+
+Le signe \(\sum\), lettre grecque sigma, abrège une addition répétée.
+L'indice écrit en dessous parcourt les valeurs indiquées ; chaque terme
+est calculé avant d'être ajouté. Par exemple,
+\(\sum_{i=0}^{3}a_i=a_0+a_1+a_2+a_3\).
+Cet indice est local : remplacer partout \(i\) par \(j\) ne modifie
+pas le résultat. En revanche, changer les bornes change les termes inclus.
+
+La moyenne arithmétique de \(n>0\) valeurs partage leur somme en
+\(n\) parts égales. Pour les erreurs \(1,2,3,6\), la somme vaut 12
+et la moyenne vaut 3. Elle a la même unité que les valeurs initiales.
+La somme augmente généralement quand on ajoute des observations ;
+la moyenne permet de comparer des ensembles de tailles différentes.
+\[
+ \bar a=\frac{1}{n}\sum_{i=0}^{n-1}a_i,
+ \qquad
+ \sum_{i=0}^{n-1}(a_i-\bar a)=0.
+\]
+La deuxième identité se vérifie en développant :
+la somme des \(a_i\) vaut \(n\bar a\), que l'on soustrait à elle-même.
+Elle ne signifie pas que les écarts individuels sont tous nuls.
+
+\notion{Compter les observations plutôt que les lots.}
+Dans \code{evaluate}, \code{loss.item()} représente, avec le critère
+utilisé par l'entraînement, une erreur moyenne sur les tokens du lot.
+\code{y.numel()} compte ces tokens. Le programme multiplie les deux,
+additionne les résultats, puis divise par \code{total\_tokens}.
+Un lot final plus petit reçoit ainsi un poids proportionnel à sa taille.
+
+Supposons un premier lot de six cibles avec une erreur moyenne de 2,
+puis un lot de deux cibles avec une moyenne de 6. Les erreurs totales
+valent respectivement 12 et 12. La moyenne globale est donc
+\((12+12)/8=3\), et non \((2+6)/2=4\).
+Cette dernière opération donnerait autant d'importance à deux cibles
+qu'à six.
+
+Plus généralement, une moyenne pondérée utilise des coefficients positifs
+dont la somme vaut un. Ici, les poids sont \(6/8\) et \(2/8\).
+Nous retrouverons cette idée avec les probabilités et, plus tard,
+avec les mélanges de représentations. Les poids n'ont pas besoin
+d'être égaux pour former une moyenne.
+
+\exercice{Trois lots contiennent respectivement 4, 4 et 2 tokens.
+Leurs pertes moyennes valent 1, 3 et 5. Calculer la perte globale.}
+\corrige{La somme des pertes vaut \(4\times1+4\times3+2\times5=26\).
+Le nombre de tokens vaut 10, donc la moyenne correcte est \(2{,}6\).
+La moyenne non pondérée des trois valeurs serait 3 : elle surestime
+ici l'importance du dernier petit lot.}
+
+\fiche{4}{Vecteurs : des listes de nombres organisées}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Manipuler une représentation de token sans supposer de connaissances d'algèbre linéaire.}
+
+Un vecteur de dimension \(D\) est ici une liste ordonnée de \(D\)
+nombres réels. Dire \(u\in\mathbb{R}^{D}\) signifie simplement
+\(u=(u_0,\ldots,u_{D-1})\), avec une valeur réelle à chaque place.
+L'ordre compte : \((1,2)\) et \((2,1)\) ne sont pas le même vecteur.
+Le mot dimension compte les coordonnées, non les tokens ou les couches.
+
+Dans \code{MiniGPT}, \code{token\_embedding} contient une représentation
+apprise pour chaque identifiant. Si \(D=3\), un token pourrait recevoir
+\((0{,}2,-0{,}1,0{,}7)\). Ces coordonnées ne sont pas imposées comme
+« sujet », « verbe » et « adjectif ». Elles sont ajustées ensemble
+par l'apprentissage ; leur interprétation ne se lit pas directement
+dans leurs indices.
+
+\notion{Deux opérations élémentaires.}
+Pour additionner deux vecteurs de même dimension, on additionne leurs
+coordonnées correspondantes. Pour multiplier un vecteur par un nombre,
+on multiplie toutes ses coordonnées par ce nombre, appelé scalaire.
+\[
+ (1,-2,3)+(4,5,-1)=(5,3,2),
+ \qquad 2(1,-2,3)=(2,-4,6).
+\]
+Une addition ne concatène donc pas les listes : sa dimension reste 3.
+Au contraire, les placer bout à bout donnerait six coordonnées et
+constituerait une autre opération.
+
+Dans le mode positionnel appris, \code{tok\_emb + pos\_emb} ajoute
+un vecteur lié au token et un vecteur lié à sa position.
+Pour un token représenté par \((1,0,-1)\) et une position représentée
+par \((0{,}1,0{,}2,0{,}3)\), le résultat vaut
+\((1{,}1,0{,}2,-0{,}7)\). Le même token placé ailleurs garde sa
+représentation initiale, mais reçoit une autre contribution positionnelle.
+
+La longueur géométrique, ou norme euclidienne, généralise Pythagore :
+\(\|u\|=\sqrt{u_0^2+\cdots+u_{D-1}^2}\).
+Ainsi \(\|(3,4)\|=5\). Cette longueur mesure une amplitude,
+pas une probabilité. Des coordonnées négatives et des normes supérieures
+à un sont parfaitement autorisées pour les représentations du modèle.
+
+Il est utile de séparer trois notions : l'identifiant entier choisit
+une ligne de table ; le vecteur représente ce token ; sa norme résume
+une seule propriété de ce vecteur. Deux vecteurs de même norme peuvent
+contenir des informations très différentes.
+
+\exercice{Un token a pour représentation \(u=(2,-1)\), sa position
+\(p=(-1,3)\). Calculer \(h=u+p\), \(h/2\), puis \(\|h\|\).}
+\corrige{On obtient \(h=(1,2)\), puis \(h/2=(0{,}5,1)\).
+Sa norme vaut \(\sqrt{1^2+2^2}=\sqrt5\).
+Le vecteur \(h\) possède toujours deux coordonnées : l'addition
+positionnelle n'a ni ajouté un token ni doublé la dimension.}
+
+\fiche{5}{Produit scalaire : comparer et combiner}{\src{03_attention.py}{main}}
+\objectif{Calculer un score à partir de deux vecteurs et distinguer ce score d'une probabilité.}
+
+Le produit scalaire de deux vecteurs de même dimension consiste à
+multiplier les coordonnées correspondantes, puis à additionner les
+produits. Son résultat est un seul nombre, d'où son nom.
+Avec \(u=(1,2,-1)\) et \(v=(3,0,4)\), les trois contributions
+sont \(3,0,-4\), donc le score total vaut \(-1\).
+\[
+ u\cdot v=\sum_{j=0}^{D-1}u_jv_j,
+ \qquad (1,2,-1)\cdot(3,0,4)=3+0-4=-1.
+\]
+La dimension doit être identique pour savoir quelles coordonnées
+apparier. Le produit scalaire diffère du produit coordonnée par
+coordonnée : ce dernier conserverait la liste \((3,0,-4)\),
+alors que le produit scalaire la réduit à sa somme.
+
+\notion{Une lecture comme combinaison pondérée.}
+Si \(u\) contient des observations et \(v\) des coefficients,
+le score \(u\cdot v\) mesure leur combinaison. Un coefficient nul
+ignore une observation ; un coefficient négatif inverse son effet.
+Le modèle apprend précisément des coefficients de ce type.
+Tous les coefficients ne sont pas nécessairement positifs.
+
+Une deuxième lecture est géométrique. Pour des vecteurs non nuls,
+\(u\cdot v=\|u\|\|v\|\cos\theta\), où \(\theta\) est l'angle
+entre leurs directions. Un angle droit donne zéro. Mais zéro
+peut aussi venir de contributions qui s'annulent :
+\((1,1)\cdot(1,-1)=1-1=0\). Il n'implique donc pas que toutes
+les coordonnées soient nulles.
+
+Dans \src{03_attention.py}{main}, les exemples appellent
+\code{scaled\_dot\_product\_attention}. La ligne
+\code{q @ k.transpose(-2, -1)} calcule de nombreux produits
+scalaires à la fois. Nous étudierons leur organisation plus tard ;
+pour l'instant, chaque case obtenue est simplement un score
+entre deux listes de même longueur.
+
+Un grand score n'est pas une preuve absolue de ressemblance.
+Multiplier \(u\) par 10 multiplie \(u\cdot v\) par 10,
+même si sa direction reste inchangée. C'est pourquoi l'amplitude
+des vecteurs intervient dans ces scores. La division ultérieure
+par \(\sqrt{d_k}\), avec \(d_k=D/H\) pour \(H\) têtes,
+sera expliquée dans les fiches consacrées à l'attention.
+
+\exercice{Calculer \(a\cdot b\), puis \((2a)\cdot b\), pour
+\(a=(2,-1,3)\) et \(b=(1,4,0)\). Le premier résultat peut-il
+être utilisé directement comme probabilité ?}
+\corrige{Le premier score vaut \(2\times1+(-1)\times4+3\times0=-2\).
+Le second vaut \(4-8+0=-4\), soit deux fois le premier.
+Une probabilité ne peut pas être négative : ces scores nécessitent
+une transformation supplémentaire avant une interprétation probabiliste.}
+
+\fiche{6}{Matrices : lignes, colonnes et tables de paramètres}{\src{05_model.py}{MiniGPT}}
+\objectif{Lire un tableau rectangulaire et relier ses dimensions à une table de représentations.}
+
+Une matrice est un tableau rectangulaire de nombres. Sa forme indique
+d'abord le nombre de lignes, puis le nombre de colonnes. Une matrice
+\(A\) de forme \(2\times3\) contient donc six nombres.
+Le coefficient \(A_{ij}\) se trouve à la ligne \(i\), colonne \(j\).
+Nous conservons les indices commençant à zéro pour faciliter la
+correspondance avec Python.
+\[
+ A=\begin{pmatrix}1&-2&0\\3&4&5\end{pmatrix},
+ \qquad A_{0,1}=-2,\quad A_{1,2}=5.
+\]
+Une ligne de cette matrice est un vecteur de dimension 3.
+Une colonne possède deux coordonnées. Dire seulement « une matrice
+de six éléments » perd une information essentielle : les formes
+\(1\times6\), \(2\times3\) et \(3\times2\) n'organisent pas
+les données de la même manière.
+
+\notion{Une matrice peut servir de table.}
+Dans \code{MiniGPT}, le poids de \code{token\_embedding} a pour
+forme \([V,D]\). Chaque ligne correspond à un identifiant, chaque
+colonne à une coordonnée de représentation. Chercher le token
+d'identifiant 2 revient à sélectionner la ligne 2, et non à
+multiplier toutes les valeurs du tableau par 2.
+
+Avec \(V=4\) et \(D=3\), cette table contient \(4\times3=12\)
+paramètres. Une entrée \((2,0,2)\) consulte trois lignes, dont
+deux fois la même. Les deux occurrences du token 2 reçoivent
+initialement le même vecteur. Leur position et leur contexte
+pourront ensuite différencier leurs représentations.
+
+L'addition de matrices exige des formes identiques dans sa définition
+élémentaire : chaque case s'ajoute à la case correspondante.
+Multiplier une matrice par un scalaire multiplie toutes ses cases.
+Ces opérations ne mélangent pas les colonnes ; le produit matriciel,
+étudié ensuite, réalise précisément un mélange plus structuré.
+
+Les tables ne sont pas toutes carrées. La table positionnelle apprise
+a la forme \([C,D]\), alors que la table des tokens a la forme
+\([V,D]\). Elles partagent la dimension des représentations mais
+n'indexent pas les mêmes objets. \(C\) compte les positions
+admissibles, tandis que \(V\) compte les tokens distincts.
+
+\exercice{Une table contient les lignes \((1,0)\), \((0,2)\) et
+\((-1,3)\). Donner sa forme, son nombre de paramètres et le tableau
+obtenu en consultant les identifiants \((2,1)\).}
+\corrige{La forme est \(3\times2\), donc la table contient six
+paramètres. Les lignes sélectionnées sont \((-1,3)\), puis \((0,2)\).
+Le résultat est une matrice \(2\times2\). Le nombre de lignes
+de sortie dépend du nombre de tokens consultés, pas de la taille
+totale du vocabulaire.}
+
+\fiche{7}{Produit matriciel : un calcul complet}{\src{03_attention.py}{main}}
+\objectif{Effectuer chaque case d'un produit et comprendre le rôle de la dimension commune.}
+
+Multiplier deux matrices n'est pas multiplier simplement leurs cases.
+Une ligne de la première rencontre une colonne de la seconde :
+leur produit scalaire donne une case du résultat. Ainsi une matrice
+\(A\) de forme \(m\times n\) peut multiplier une matrice \(R\)
+de forme \(n\times p\). Le nombre \(n\) doit être commun ;
+le résultat a la forme \(m\times p\).
+\[
+ A=\begin{pmatrix}1&2&-1\\0&3&2\end{pmatrix},
+ \qquad R=\begin{pmatrix}2&1\\-1&0\\4&2\end{pmatrix}.
+\]
+Ici, deux lignes de longueur trois rencontrent deux colonnes de
+longueur trois. La première case vaut
+\(1\times2+2\times(-1)+(-1)\times4=-4\).
+La deuxième vaut \(1\times1+2\times0+(-1)\times2=-1\).
+La troisième vaut \(0\times2+3\times(-1)+2\times4=5\).
+La dernière vaut \(0\times1+3\times0+2\times2=4\).
+\[
+ AR=\begin{pmatrix}-4&-1\\5&4\end{pmatrix},
+ \qquad (AR)_{ij}=\sum_{r=0}^{n-1}A_{ir}R_{rj}.
+\]
+Les indices libres \(i,j\) désignent la case conservée.
+L'indice \(r\), parcouru dans la somme, disparaît du résultat.
+Cette différence explique pourquoi la dimension commune ne figure
+plus dans la forme finale.
+
+\notion{Le code applique cette recette en parallèle.}
+L'opérateur Python \code{@} réalise le produit matriciel pour
+des tableaux à deux dimensions. Dans
+\src{03_attention.py}{main}, l'exemple
+\code{pytorch\_attention\_example} construit notamment
+\code{q = x @ wq}. La matrice \code{wq} y est une matrice
+explicite de coefficients ; ne lui attribuons pas automatiquement
+l'orientation interne d'un module \code{nn.Linear}.
+
+Chaque ligne d'entrée est transformée par les mêmes colonnes de
+coefficients. On peut donc traiter plusieurs positions sans écrire
+une boucle Python pour chacune. L'opération ne mélange pas ici
+les lignes d'entrée entre elles : chaque ligne produit sa propre
+ligne de sortie.
+
+L'ordre des facteurs importe. Dans notre exemple, \(AR\) a la
+forme \(2\times2\), mais \(RA\) aurait la forme \(3\times3\).
+Ils ne peuvent même pas être comparés case par case. Avec des
+matrices carrées, des formes compatibles ne suffisent toujours
+pas à garantir l'égalité des deux produits.
+
+\exercice{Pour \(X=\begin{pmatrix}2&1\\-1&3\end{pmatrix}\) et
+\(w=\begin{pmatrix}4\\-2\end{pmatrix}\), calculer \(Xw\).
+Quelle opération donnerait plutôt un tableau \(2\times2\) de produits
+individuels ?}
+\corrige{La première sortie vaut \(2\times4+1\times(-2)=6\).
+La seconde vaut \((-1)\times4+3\times(-2)=-10\).
+Ainsi \(Xw=(6,-10)^{\mathsf T}\), de forme \(2\times1\).
+Un produit élément par élément, éventuellement avec diffusion,
+conserverait deux colonnes ; il n'effectuerait pas ces sommes.}
+
+\fiche{8}{Transposée et contrôle des dimensions}{\src{03_attention.py}{MultiHeadSelfAttention.forward}}
+\objectif{Permuter des axes volontairement plutôt que corriger les formes au hasard.}
+
+La transposée d'une matrice échange lignes et colonnes. Si \(A\)
+a la forme \(m\times n\), alors \(A^{\mathsf T}\) a la forme
+\(n\times m\), et sa case \((j,i)\) contient \(A_{ij}\).
+Les nombres ne changent pas, seule leur organisation change.
+Deux transpositions successives rendent la matrice initiale.
+\[
+ \begin{pmatrix}1&2&3\\4&5&6\end{pmatrix}^{\mathsf T}
+ =\begin{pmatrix}1&4\\2&5\\3&6\end{pmatrix}.
+\]
+Une ligne devient ainsi une colonne. Cette opération permet de
+présenter des vecteurs dans l'orientation nécessaire à un produit
+matriciel ; ce n'est ni une inversion ni une division.
+Même lorsqu'une matrice inverse existe, elle répond à une autre question.
+
+Supposons que \(Q\) et \(K\) contiennent chacun \(T\) lignes de
+\(d_k\) coordonnées. Pour comparer chaque ligne de \(Q\) à chaque
+ligne de \(K\), il faut présenter ces dernières comme des colonnes.
+Le calcul des formes s'écrit alors :
+\[
+ \underbrace{Q}_{T\times d_k}
+ \underbrace{K^{\mathsf T}}_{d_k\times T}
+ =\underbrace{S}_{T\times T},
+ \qquad S_{ij}=\sum_{r=0}^{d_k-1}Q_{ir}K_{jr}.
+\]
+La case \(S_{ij}\) correspond à la ligne \(i\) de \(Q\) et à
+la ligne \(j\) de \(K\). En général \(S_{ij}\) n'égale pas
+\(S_{ji}\), car \(Q\) et \(K\) sont deux tableaux différents.
+
+\notion{Les axes négatifs se comptent depuis la droite.}
+Dans la fonction \code{scaled\_dot\_product\_attention}, appelée
+par \code{MultiHeadSelfAttention.forward},
+\code{k.transpose(-2, -1)} échange les deux derniers axes.
+Les axes précédents, dédiés notamment aux lots et aux têtes,
+restent en place. Échanger tous les axes d'un tableau plus grand
+serait donc une opération différente.
+
+Un contrôle de dimensions doit précéder les valeurs numériques.
+Avec \(T=5\) et \(d_k=2\), le produit attendu est
+\((5\times2)(2\times5)\), donc \(5\times5\).
+Tenter \((5\times2)(5\times2)\) échoue parce que 2 et 5
+ne coïncident pas. Si ces nombres étaient accidentellement égaux,
+l'absence d'erreur informatique ne prouverait pas la justesse du sens.
+
+\exercice{Soient \(Q=((1,0),(0,2))\) et
+\(K=((3,1),(4,-1))\), les couples représentant les lignes.
+Calculer \(QK^{\mathsf T}\) et expliquer sa case \((1,0)\).}
+\corrige{Les produits scalaires donnent les lignes \((3,4)\)
+et \((2,-2)\). La case \((1,0)\) vaut
+\(0\times3+2\times1=2\) : elle compare la deuxième ligne
+de \(Q\) à la première ligne de \(K\), conformément à
+notre convention d'indices commençant à zéro.}
