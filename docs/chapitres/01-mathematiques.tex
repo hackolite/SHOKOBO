@@ -420,7 +420,7 @@ la ligne \(j\) de \(K\). En général \(S_{ij}\) n'égale pas
 \(S_{ji}\), car \(Q\) et \(K\) sont deux tableaux différents.
 
 \notion{Les axes négatifs se comptent depuis la droite.}
-Dans la fonction \code{scaled\_dot\_product\_attention}, appelée
+Dans \code{scaled\_dot\_product\_attention}, appelée
 par \code{MultiHeadSelfAttention.forward},
 \code{k.transpose(-2, -1)} échange les deux derniers axes.
 Les axes précédents, dédiés notamment aux lots et aux têtes,

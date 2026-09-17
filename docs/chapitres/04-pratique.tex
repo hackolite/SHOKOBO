@@ -544,8 +544,9 @@ d'abord chargés sur CPU ; après reconstruction et insertion des poids,
 le modèle est déplacé vers le périphérique et le type numérique demandés.
 Le mode évaluation est ensuite activé.
 
-\notion{Un checkpoint récent possède un champ \code{tokenizer}, reconstruit
-par \code{tokenizer\_from\_state}. Sinon, le chargeur suit la branche historique :
+\notion{Un checkpoint récent possède un champ \code{tokenizer}.
+La fonction \code{tokenizer\_from\_state} le reconstruit.
+Sinon, le chargeur suit la branche historique :
 il repart de \code{vocab}, restaure l'ordre \code{itos}, reconstruit
 \code{stoi} et retrouve l'identifiant de \code{<unk>}.}
 
@@ -917,7 +918,7 @@ La validation emploie le même mécanisme d'autocast, en plus du mode
 évaluation et de l'absence de gradients. Le passage initial d'affichage
 des formes, lui, n'est pas entouré de cet autocast.
 
-À l'inférence, le chargeur construit le modèle, charge les poids, puis appelle
+À l'inférence, le chargeur crée le modèle, charge les poids, puis appelle
 \code{model.to(device=device, dtype=dtype)}. Ici, choisir
 \code{bfloat16} convertit réellement les paramètres flottants du modèle.
 La fonction \code{generate} n'ajoute pas un contexte d'autocast analogue à
@@ -1055,9 +1056,9 @@ Le premier décrit le coût du parcours mesuré ; le second isolerait une
 partie du travail. Le script ne mesure pas séparément cette deuxième durée :
 elle a seulement été supposée pour l'exercice.}
 
-\attention{Conserver l'intitulé complet
-\code{training\_tokens\_per\_second\_including\_validation} dans les données
-archivées, quitte à l'expliquer en français dans un graphique.
+\attention{Conserver dans les données archivées l'intitulé complet
+\code{training\_\allowbreak tokens\_\allowbreak per\_\allowbreak second\_\allowbreak including\_\allowbreak validation},
+quitte à l'expliquer en français dans un graphique.
 La taille des paramètres n'est jamais à présenter comme la mémoire
 totale requise pour entraîner ou générer.}
 

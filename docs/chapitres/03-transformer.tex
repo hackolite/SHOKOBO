@@ -144,7 +144,7 @@ où $\mathrm{V}$ signifie vrai et $\mathrm{F}$ faux. La première position ne pe
 
 Reprenons exactement les données de la fiche précédente, mais fournissons cette fois le masque causal de taille deux. Le score en haut à droite devient $-\infty$. Avec les mêmes $a=1/\sqrt2$ et $r=e^a/(e^a+1)$, on obtient
 \[
- S_{\mathrm{masqué}}=\begin{pmatrix}a&-\infty\\a&0\end{pmatrix},
+ S_{\text{masqué}}=\begin{pmatrix}a&-\infty\\a&0\end{pmatrix},
  \quad A=\begin{pmatrix}1&0\\r&1-r\end{pmatrix},
  \quad O=\begin{pmatrix}10&0\\10r&5(1-r)\end{pmatrix}.
 \]
@@ -275,7 +275,7 @@ Le masque dépend de la présence d'un passé non vide. Sans passé, il est caus
 \[
  \text{sortie}:(B,T,D),\qquad
  \text{poids}:(B,H,T,p+T),\qquad
- K_{\mathrm{présent}},V_{\mathrm{présent}}:(B,H,p+T,d_k).
+ K_{\text{présent}},V_{\text{présent}}:(B,H,p+T,d_k).
 \]
 Ces formes rendent les retours faciles à vérifier. Sans option, le module renvoie seulement la sortie. Avec \code{return\_attention=True}, il renvoie sortie puis poids. Avec \code{use\_cache=True}, il renvoie sortie puis paire clé-valeur. Avec les deux options, l'ordre est sortie, poids, paire clé-valeur.
 
@@ -457,7 +457,7 @@ Si aucune cible n'est fournie, \code{loss} reste \code{None}. Sans demande de ca
 Le constructeur termine par \code{self.apply(self.\_init\_weights)}, ce qui visite récursivement les sous-modules. Pour chaque \code{nn.Linear} ou \code{nn.Embedding}, les poids sont tirés avec une moyenne nulle et \code{std=0.02}. Les biais des couches linéaires sont mis à zéro.
 \[
  \mathbb E[W_{ij}]=0,\qquad
- \operatorname{écart\text{-}type}(W_{ij})=0{,}02,\qquad
+ \text{écart-type}(W_{ij})=0{,}02,\qquad
  \operatorname{Var}(W_{ij})=(0{,}02)^2=0{,}0004.
 \]
 Écrire seulement une loi normale avec deux nombres sans préciser la convention peut induire en erreur : certains livres utilisent la variance comme second paramètre. Ici, le nom de l'argument Python tranche. Il s'agit bien d'un écart-type de deux centièmes.

@@ -8,7 +8,6 @@
 \usepackage{microtype}
 \usepackage{xcolor}
 \usepackage{listings}
-\usepackage{enumitem}
 \usepackage{booktabs}
 \usepackage{fancyhdr}
 \usepackage{hyperref}
@@ -21,7 +20,6 @@
 }
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{5pt}
-\setlist{nosep,leftmargin=*}
 \setlength{\emergencystretch}{2em}
 \pagestyle{fancy}
 \fancyhf{}
@@ -128,6 +126,8 @@ page ; le sommaire donne à la fois son numéro et sa page physique.
 
 \textbf{Quatre parcours successifs}
 \begin{enumerate}
+  \setlength{\itemsep}{0pt}
+  \setlength{\parskip}{0pt}
   \item Fiches 1--24 : construire les outils mathématiques et comprendre
         comment une probabilité devient une erreur à minimiser.
   \item Fiches 25--48 : suivre le texte jusqu'aux lots de fenêtres,

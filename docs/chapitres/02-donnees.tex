@@ -63,7 +63,7 @@ Le texte composé de « A », « é » et du caractère U+1F642 contient
 trois points de code. En UTF-8, leurs tailles respectives sont un, deux
 et quatre octets. On obtient donc :
 \[
-    N_{\mathrm{caractères}}=3,\qquad N_{\mathrm{octets}}=1+2+4=7.
+    N_{\text{caractères}}=3,\qquad N_{\mathrm{octets}}=1+2+4=7.
 \]
 Le tokenizer caractère produit ici trois IDs, mais leur stockage ultérieur
 en entiers de huit octets occupera vingt-quatre octets, hors métadonnées.
@@ -768,6 +768,7 @@ successivement pour chaque artefact.
 Un bloc \code{finally} tente de supprimer les fichiers préparatoires restants,
 y compris lorsqu'une exception interrompt la préparation.
 
+{\raggedright
 Les destinations par défaut sont
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/train.bin},
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/val.bin}
@@ -775,7 +776,7 @@ et
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/tokenizer.json}.
 L'écriture préparatoire du premier utilise notamment
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/train.bin.partial}.
-Le même suffixe est appliqué aux deux autres destinations.
+Le même suffixe est appliqué aux deux autres destinations.\par}
 
 \attention{Ce n'est pas une transaction « tout ou rien » sur le trio.}
 Même lorsqu'un remplacement individuel est atomique dans le système de fichiers,
@@ -804,7 +805,7 @@ ne prouve donc pas l'atomicité globale du second.}
 
 \fiche{41}{Des IDs binaires de huit octets}{\src{02_dataset.py}{MemmapTokenDataset}}
 \objectif{Calculer l'espace disque et reconnaître ce que le format ne décrit pas.}
-Lors de la préparation, les IDs de chaque bloc sont convertis avec
+La préparation convertit les IDs de chaque bloc avec
 \code{np.asarray(..., dtype=np.int64)}, puis écrits avec \code{tofile}.
 Un entier \code{int64} occupe huit octets. Les écritures successives
 s'ajoutent dans le même flux binaire ; aucun séparateur n'est nécessaire
@@ -954,7 +955,7 @@ vérifiée dans les tests de mutation et de restauration du dataset.}
 
 \fiche{44}{Échantillonner avec remise n'est pas mélanger}{\src{06_train.py}{train}}
 \objectif{Interpréter une époque dans le chemin d'entraînement actuel.}
-L'entraînement construit un \code{RandomSampler} avec
+L'entraînement utilise \code{RandomSampler} avec
 \code{replacement=True} et \code{num\_samples=len(dataset)}.
 Il demande donc autant de tirages qu'il existe de fenêtres, mais chaque
 tirage peut reprendre un indice déjà obtenu. Le choix évite une permutation
@@ -1059,9 +1060,9 @@ minuscule reste statistiquement fragile.}
 
 \fiche{46}{Lire les tests : preuves locales et angles morts}{\src{02_dataset.py}{MemmapTokenDataset}}
 \objectif{S'appuyer sur les assertions existantes sans leur attribuer une garantie universelle.}
-Le fichier
+Le fichier de test est
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/tests/test_data.py}
-utilise \code{unittest}, NumPy et PyTorch. Les cas construisent de petits
+et utilise \code{unittest}, NumPy et PyTorch. Les cas construisent de petits
 corpus contrôlés et vérifient des propriétés observables du pipeline.
 Lire un test consiste à identifier ses données, son action et son assertion.
 Le nom d'un test suggère son intention ; seules les assertions montrent
