@@ -1,4 +1,4 @@
-\fiche{25}{Se repérer : scripts, imports et notebook}{\src{02_dataset.py}{load\_local\_module}}
+\fiche{25}{Se repérer : scripts, imports et notebook}{\src{02_dataset.py}{load_local_module}}
 \objectif{Identifier le chemin réellement exécuté avant d'expliquer les données.}
 Le dépôt propose une progression lisible : tokenisation, jeux de données,
 attention, blocs Transformer, modèle, entraînement, génération. Cette progression
@@ -24,9 +24,10 @@ fenêtres de son \code{main}. Le chemin est calculé relativement à
 \code{\_\_file\_\_}, non relativement au dossier depuis lequel on lance Python.
 
 \notion{Deux parcours de données coexistent.}
-La démonstration de \src{02_dataset.py}{main} lit tout le petit texte,
+La démonstration \code{main} du script de données lit tout le petit texte,
 apprend un tokenizer caractère et emploie \code{NextTokenDataset}.
-L'entraînement actif de \src{06_train.py}{train} appelle
+L'entraînement actif, défini par \code{train} dans
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/06_train.py}, appelle
 \code{prepare\_corpus}, puis \code{MemmapTokenDataset}. La fonction historique
 \code{create\_dataloaders} existe encore, mais ce n'est pas le chemin appelé
 par \code{train}. Lire seulement son découpage à 90\,\% donnerait donc une
@@ -48,7 +49,7 @@ On rencontre la préparation des fichiers, les datasets memmap et un
 Il faut distinguer une définition présente dans le fichier d'une fonction
 effectivement exécutée : la proximité visuelle n'établit aucune relation d'appel.}
 
-\fiche{26}{Texte Unicode, octets et vocabulaire}{\src{01_tokenizer.py}{train\_tokenizer}}
+\fiche{26}{Texte Unicode, octets et vocabulaire}{\src{01_tokenizer.py}{train_tokenizer}}
 \objectif{Distinguer ce que l'on voit, ce que Python compte et ce que le disque stocke.}
 Un texte Python de type \code{str} est une suite de points de code Unicode.
 Un fichier UTF-8 est une suite d'octets. Un octet possède 256 valeurs possibles ;
@@ -58,8 +59,9 @@ un accent combinant ou plusieurs signes composant un emoji peuvent participer
 à un seul graphème perçu par le lecteur.
 
 \notion{La longueur dépend de l'unité choisie.}
-Le texte original « Aé🙂 » contient trois points de code. En UTF-8, leurs
-tailles respectives sont un, deux et quatre octets. On obtient donc :
+Le texte composé de « A », « é » et du caractère U+1F642 contient
+trois points de code. En UTF-8, leurs tailles respectives sont un, deux
+et quatre octets. On obtient donc :
 \[
     N_{\mathrm{caractères}}=3,\qquad N_{\mathrm{octets}}=1+2+4=7.
 \]
@@ -168,7 +170,7 @@ lettres. Il n'est ni supprimé ni reconstruit par une règle grammaticale.
 \]
 
 En revanche, « bz » devient \([3,0]\), puis « b? ».
-Une chaîne « bΩ » suit le même trajet. Deux entrées distinctes ayant la même
+Une chaîne « b\(\Omega\) » suit le même trajet. Deux entrées distinctes ayant la même
 image, aucune fonction de décodage ne peut déterminer quel caractère inconnu
 était présent. Cette perte n'est pas une erreur du réseau : elle se produit
 avant son intervention. Elle illustre une application non injective,
@@ -197,7 +199,7 @@ donner le résultat de \code{id\_to\_token(-1)}. Peut-on retrouver les inconnus 
 le décodage fournit une représentation de remplacement, pas une réparation.
 Il faut conserver le texte brut si cette information doit rester accessible.}
 
-\fiche{29}{Sauvegarder l'état caractère sans réapprendre}{\src{01_tokenizer.py}{tokenizer\_from\_state}}
+\fiche{29}{Sauvegarder l'état caractère sans réapprendre}{\src{01_tokenizer.py}{tokenizer_from_state}}
 \objectif{Comprendre pourquoi les poids du modèle ne suffisent pas à interpréter ses IDs.}
 Une ligne d'embedding correspond à un ID précis. Si l'on recharge les poids
 avec un vocabulaire différent, les mêmes nombres peuvent désigner d'autres
@@ -226,13 +228,13 @@ IDs, ce qui est plus exigeant que la seule égalité de taille du vocabulaire.
 Deux vocabulaires peuvent avoir dix entrées et pourtant attribuer des
 significations différentes à chacun des dix indices.
 
-Dans \src{02_dataset.py}{prepare\_corpus}, l'état est écrit en JSON UTF-8
+Dans \code{prepare\_corpus}, l'état est écrit en JSON UTF-8
 avec \code{ensure\_ascii=False}. Les accents peuvent ainsi rester lisibles
 dans le fichier
 \path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/tokenizer.json}
 pour la sortie par défaut. Une sérialisation JSON avec échappements Unicode
 aurait le même sens après lecture ; ce choix concerne surtout la lisibilité.
-Dans \src{06_train.py}{train}, le checkpoint conserve également
+Dans \code{train}, le checkpoint conserve également
 \code{tokenizer.to\_state()}, ainsi qu'un champ \code{vocab} historique
 pour le mode caractère.
 
@@ -250,7 +252,7 @@ Après ajout et tri, elle devient \code{['<unk>', 'a', 'b', 'c']}.
 L'ancien ID 2, qui signifiait \code{c}, signifie alors \code{b}.
 L'absence d'erreur informatique ne garantit donc pas la cohérence du modèle.}
 
-\fiche{30}{BPE : apprendre des fusions, à la main}{\src{01_tokenizer.py}{train\_tokenizer}}
+\fiche{30}{BPE : apprendre des fusions, à la main}{\src{01_tokenizer.py}{train_tokenizer}}
 \objectif{Comprendre le principe des paires fréquentes avant les détails de la bibliothèque.}
 Le mode caractère impose une position par caractère. BPE cherche à représenter
 des suites fréquentes par des unités plus longues. Son nom, \emph{Byte Pair
@@ -299,3 +301,916 @@ Si l'on impose de fusionner \((a,b)\), quelle représentation obtient-on ?}
 deux fois : il y a égalité, donc aucune fusion unique n'est déductible des
 seules fréquences. Avec le choix imposé, chaque occurrence devient
 \([ab,a,c]\), soit trois tokens au lieu de quatre.}
+
+\fiche{31}{BPE byte-level : partir des 256 octets}{\src{01_tokenizer.py}{BPETokenizer}}
+\objectif{Expliquer pourquoi un caractère absent de l'apprentissage reste représentable.}
+Dans le dépôt, le BPE n'apprend pas seulement sur l'alphabet des lettres
+rencontrées. Son prétraitement est \code{ByteLevel(add\_prefix\_space=False)}
+et son alphabet initial contient les 256 valeurs d'octet.
+La bibliothèque représente ces octets par des symboles internes ;
+les tokens affichés ne doivent donc pas toujours être lus comme des fragments
+ordinaires de texte Unicode.
+
+\notion{Couverture des octets et couverture des caractères sont différentes.}
+Un emoji absent du texte d'entraînement possède néanmoins une représentation
+UTF-8 constituée d'octets. Ces octets sont couverts par l'alphabet initial,
+même lorsqu'aucune fusion apprise ne les regroupe. L'encodage peut être plus
+long que pour un motif fréquent, mais le décodage byte-level peut reconstituer
+le caractère. C'est une différence fondamentale avec le remplacement par
+\code{unk\_id} du tokenizer caractère.
+
+Le formateur BPE conserve aussi \code{<unk>} comme token spécial. Le vocabulaire
+dispose donc d'un plancher :
+\[
+    V\geq 256+1=257.
+\]
+Demander \code{vocab\_size=100} ne supprime pas les octets nécessaires :
+la taille réelle peut dépasser la demande. Inversement, demander une grande
+taille ne garantit pas assez de motifs utiles pour l'atteindre. Le modèle
+doit utiliser \code{tokenizer.vocab\_size}, propriété effective du backend,
+et non supposer que la valeur demandée est la taille obtenue.
+
+\notion{L'absence de normalisation est un choix concret.}
+Aucun normaliseur n'est installé. L'option de préfixe est désactivée :
+on n'ajoute pas une espace artificielle au début du texte. Le décodeur
+\code{ByteLevel} accompagne le pré-tokenizer. L'encodage utilise
+\code{add\_special\_tokens=False} et le décodage
+\code{skip\_special\_tokens=False}. Ces réglages préservent notamment
+le traitement explicite du marqueur littéral étudié par les tests.
+Cela ne promet pas qu'une suite arbitraire d'IDs produite par un modèle
+forme toujours des octets UTF-8 valides.
+
+\attention{La dépendance BPE est facultative, pas implicite.}
+\code{\_bpe\_library} importe \code{tokenizers} seulement à la demande.
+Le parcours caractère n'en a pas besoin. Son installation est décrite dans
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/requirements-bpe.txt}.
+La restauration d'un état BPE exige elle aussi cette bibliothèque, même
+si aucun nouvel apprentissage du tokenizer n'est prévu.
+
+\exercice{Un tokenizer BPE appris sur des lettres latines reçoit « \(\Omega\) ».
+Faut-il ajouter obligatoirement cette lettre au vocabulaire ? Que représente
+la borne 257 ?}
+\corrige{Non : les octets UTF-8 de « \(\Omega\) » sont déjà représentables.
+Une fusion spécifique pourrait raccourcir sa représentation, sans être
+nécessaire à sa couverture. La borne compte 256 symboles d'octet et le token
+spécial ; elle ne compte pas 257 caractères Unicode différents.}
+
+\fiche{32}{Le budget d'apprentissage BPE et son biais}{\src{01_tokenizer.py}{_bpe_training_chunks}}
+\objectif{Séparer le texte utilisé pour apprendre le tokenizer du texte utilisé pour entraîner le réseau.}
+Le BPE pourrait accumuler beaucoup de statistiques si on lui soumettait
+sans limite un corpus immense. Le dépôt borne donc son apprentissage :
+\code{BPE\_TRAINING\_CHAR\_LIMIT} vaut un million de caractères et
+\code{BPE\_CHUNK\_SIZE} vaut 4096.
+Ces unités sont des caractères Python, pas des octets du fichier ni des tokens
+déjà calculés. Ce choix limite les données confiées au formateur de la bibliothèque.
+
+\notion{Le générateur découpe et décrémente un budget.}
+Il parcourt les chaînes reçues dans leur ordre, les fractionne si nécessaire,
+soustrait chaque longueur à \code{remaining}, puis s'arrête à zéro.
+Les chaînes vides ne produisent pas de bloc.
+La borne concerne le préfixe cumulé de l'itérable : elle n'est pas renouvelée
+pour chaque chaîne. Un corpus plus court est naturellement consommé en entier,
+sans remplissage artificiel.
+
+Avec un budget miniature de sept caractères et une taille de bloc de trois,
+les chaînes \code{['', 'abcd', 'efghijk', 'unused']} produisent
+\code{['abc', 'd', 'efg']}. Le bloc \code{'d'} reste séparé du suivant :
+le générateur ne rassemble pas les fins de chaînes pour remplir chaque bloc.
+Cet exemple, également présent comme cas de test, rend visibles à la fois
+la borne totale et les frontières d'entrée.
+
+\notion{Apprendre un code et apprendre à prédire sont deux opérations.}
+Après ce budget d'apprentissage BPE, \code{prepare\_corpus} encode tout
+le texte d'entraînement. Les passages situés après le premier million
+de caractères ne sont pas abandonnés par le réseau. Ils utilisent simplement
+des fusions choisies sur un sous-ensemble initial.
+\[
+    N_{\mathrm{apprentissage\ BPE}}
+    \leq \min(N_{\mathrm{train}},1\,000\,000).
+\]
+Les octets garantissent leur représentabilité, mais pas une segmentation
+aussi compacte que celle des thèmes rencontrés au début.
+
+\attention{Un préfixe borné n'est pas un échantillon aléatoire représentatif.}
+Si un corpus commence par un long catalogue puis continue par des dialogues,
+les fusions peuvent privilégier les références du catalogue.
+Changer la graine du réseau ne corrige pas ce biais de sélection.
+Il faut réfléchir à l'organisation du texte avant la préparation,
+sans y faire entrer la validation pour améliorer artificiellement sa couverture.
+La borne contrôle une dépense de calcul et de mémoire ; elle ne garantit
+ni équilibre linguistique ni qualité des unités.
+
+\exercice{Pour 1\,200\,000 caractères d'entraînement, combien sont au maximum
+vus par le formateur BPE ? Combien sont ensuite proposés à l'encodage ?}
+\corrige{Le formateur voit au maximum 1\,000\,000 caractères.
+L'encodage traite les 1\,200\,000 caractères. Les 200\,000 derniers utilisent
+le vocabulaire déjà fixé ; ils ne déclenchent pas de nouvelles fusions.}
+
+\fiche{33}{État BPE et frontières de tokenisation}{\src{01_tokenizer.py}{BPETokenizer}}
+\objectif{Comprendre ce qui est sauvegardé et pourquoi deux encodages du même texte peuvent différer.}
+Pour BPE, une simple liste de caractères serait insuffisante. Il faut conserver
+le vocabulaire appris, les règles de fusion et la configuration du traitement
+des octets. \code{BPETokenizer.to\_state} renvoie donc
+\code{kind: 'bpe'} et \code{tokenizer\_json}, une sérialisation complète
+du backend. \code{tokenizer\_from\_state} la recharge avec
+\code{Tokenizer.from\_str}, sans recommencer l'apprentissage.
+
+\notion{Restaurer le tokenizer ne restaure pas automatiquement toutes les conditions d'encodage.}
+L'état décrit le backend. La taille des blocs de lecture utilisés par
+\code{prepare\_corpus} appartient, elle, au code de préparation.
+Pour reproduire exactement les fichiers d'IDs, il faut conserver le texte,
+son découpage brut, le tokenizer et la stratégie de blocs.
+L'égalité des textes décodés est un critère moins strict que l'égalité
+des séquences d'entiers.
+
+Imaginons, uniquement pour raisonner, qu'une fusion apprise représente
+\code{ab} par un seul token. Encoder \code{ab} d'un seul tenant peut
+produire un ID. Encoder \code{a}, puis \code{b} dans deux appels séparés
+ne peut pas appliquer cette fusion à travers les appels.
+Les deux listes concaténées contiennent alors deux IDs.
+\[
+    E(u\,v)\ne E(u)\mathbin{\Vert}E(v)
+    \quad\text{peut se produire avec BPE.}
+\]
+Le symbole \(\Vert\) désigne la concaténation de listes, non une addition.
+Dans les deux cas, le décodage des IDs issus du texte peut reconstituer
+\code{ab}. Une représentation différente n'implique donc pas nécessairement
+une information textuelle perdue.
+
+\notion{Deux types de frontières interviennent dans le pipeline.}
+Les blocs d'apprentissage interdisent certaines fusions lors de leur acquisition.
+Les blocs d'encodage interdisent ensuite d'appliquer une fusion à cheval
+sur deux appels. Enfin, la frontière entre entraînement et validation est
+respectée séparément : aucun appel ne fusionne un morceau de train avec
+un morceau de validation.
+
+\attention{Une frontière de tokenisation n'est pas une réinitialisation du modèle.}
+Les IDs des blocs successifs d'un même split sont écrits à la suite.
+Les fenêtres du dataset pourront donc traverser ces anciennes frontières.
+Aucun token séparateur n'est ajouté pour les signaler. Seule la séparation
+entre les deux fichiers interdit une fenêtre mélangeant train et validation.
+
+\exercice{Deux préparations emploient le même état BPE mais des blocs de
+4096 et 2048 caractères. Doivent-elles avoir les mêmes tailles binaires ?}
+\corrige{Non. Les frontières supplémentaires peuvent empêcher des fusions
+et changer le nombre d'IDs. Il faut mesurer ce nombre après encodage.
+Même si les deux textes reconstruits sont identiques, les fenêtres en tokens
+et les quantités de contexte textuel qu'elles couvrent peuvent différer.}
+
+\fiche{34}{Autorégression : une entrée, sa cible décalée}{\src{02_dataset.py}{NextTokenDataset}}
+\objectif{Transformer une suite d'IDs en questions de prédiction sans créer d'étiquettes manuelles.}
+L'autorégression apprend à prédire le prochain élément à partir des précédents.
+Dans un texte, chaque token observé peut devenir la cible du token situé
+juste avant lui. Les données fournissent ainsi leurs propres réponses :
+on parle d'apprentissage auto-supervisé. Il ne s'agit pas de demander à un
+humain de classer chaque phrase, mais de réorganiser un texte déjà disponible.
+
+\notion{Une fenêtre de longueur \(T\) demande \(T+1\) tokens sources.}
+Notons \(z_0,\ldots,z_{N-1}\) les IDs du split.
+Pour un départ \(i\), on prépare :
+\[
+    X_t=z_{i+t},\qquad Y_t=z_{i+t+1},
+    \qquad 0\leq t<T.
+\]
+La longueur maximale de contexte du modèle est notée \(C\).
+Les datasets de ce dépôt construisent des fenêtres fixes de taille \(T=C\),
+même si la notation distingue utilement longueur courante et capacité maximale.
+Ni \(T\) ni \(C\) n'est la taille \(V\) du vocabulaire.
+
+Prenons la suite artificielle \([4,7,2,9,5]\) et \(T=3\).
+Au départ zéro, \(X=[4,7,2]\) et \(Y=[7,2,9]\).
+La première position doit prévoir 7 après avoir reçu 4.
+La deuxième peut utiliser 4 et 7 pour prévoir 2.
+La troisième peut utiliser 4, 7 et 2 pour prévoir 9.
+Le token 5 n'intervient pas dans cette première fenêtre, mais apparaîtra
+dans la cible de la fenêtre suivante.
+
+\notion{Le décalage seul ne garantit pas la causalité.}
+Les cibles sont justes, mais un réseau sans masque pourrait regarder
+\(X_{t+1}\), qui est précisément \(Y_t\). Il disposerait de la réponse
+à l'intérieur de l'entrée. Le masque causal étudié dans le chapitre Transformer
+empêche cette consultation du futur. Ici, nous préparons les bonnes paires ;
+le modèle devra encore respecter la bonne circulation d'information.
+
+\attention{On ne tire pas de nouveaux tokens pour construire \(Y\).}
+Les cibles viennent du corpus observé. Pendant l'entraînement, les entrées
+sont également les vrais tokens du texte, pas les prédictions précédentes
+du réseau. La génération fonctionnera autrement : le modèle réinjectera
+ses propres sorties lorsqu'aucun texte futur n'est fourni.
+Cette différence explique pourquoi une erreur générée peut modifier
+tout le contexte suivant.
+
+\exercice{Avec \([8,1,6,3]\) et \(T=3\), écrire les paires et expliquer
+pourquoi utiliser \(Y=X\) ne convient pas.}
+\corrige{On obtient \(X=[8,1,6]\) et \(Y=[1,6,3]\).
+Choisir \(Y=X\) demanderait de recopier le token courant au lieu de prévoir
+le suivant. Le dernier token 3 est une cible valable précisément parce
+qu'un quatrième token source est disponible.}
+
+\fiche{35}{Compter les fenêtres du dataset en mémoire}{\src{02_dataset.py}{NextTokenDataset}}
+\objectif{Retrouver la formule de longueur à partir des indices admissibles.}
+\code{NextTokenDataset} garde une liste d'IDs et une longueur de contexte.
+Il ne fabrique pas d'avance une liste contenant toutes les fenêtres.
+À chaque appel, deux tranches de la liste source sont converties en tenseurs
+\code{torch.long}. C'est le dataset simple de la démonstration,
+utile pour vérifier à la main la géométrie des exemples.
+
+\notion{Le dernier indice de la cible impose la borne.}
+Pour un départ \(i\) et une longueur \(C\), la dernière cible utilise
+l'ID d'indice \(i+C\). Elle doit rester dans la liste de longueur \(N\),
+dont le dernier indice est \(N-1\). Par conséquent :
+\[
+    0\leq i\leq N-C-1,\qquad
+    M=\operatorname{len}(\mathrm{dataset})=N-C.
+\]
+Le nombre d'entiers entre zéro et \(N-C-1\), bornes incluses, est bien
+\(N-C\). Ce « plus un » du comptage des indices est une source fréquente
+d'erreurs ; partir de la dernière cible évite de deviner la formule.
+
+Avec sept IDs \([0,1,2,3,4,5,6]\) et \(C=4\), il existe trois fenêtres.
+Leurs départs sont 0, 1 et 2. La dernière a
+\(X=[2,3,4,5]\) et \(Y=[3,4,5,6]\).
+Un départ 3 demanderait une cible d'indice 7, inexistante.
+Si l'on réduit le contexte à deux, le nombre de fenêtres passe à cinq,
+mais chaque prédiction dispose de moins d'historique.
+
+\notion{Les fenêtres se recouvrent fortement.}
+Deux départs voisins partagent presque tous leurs tokens. Ils ne sont donc
+pas des observations indépendantes. Un token central peut contribuer à plusieurs
+cibles avec des préfixes différents. Ce recouvrement est voulu pour exploiter
+le texte ; il faudra cependant éviter de disperser de telles fenêtres
+entre entraînement et validation.
+
+\attention{Cette classe reste volontairement peu défensive.}
+Le constructeur vérifie que la liste est plus longue que le contexte.
+Il n'effectue pas les validations détaillées de type, de positivité
+ou de bornes présentes dans \code{MemmapTokenDataset}. En particulier,
+il ne faut pas supposer que les indices négatifs reproduisent le comportement
+du dataset memmap : les tranches Python peuvent donner des fenêtres vides
+ou tronquées. Dans l'usage normal, le chargeur parcourt les indices valides
+de zéro à \(M-1\).
+
+\exercice{Un corpus possède douze IDs. Combien de fenêtres obtient-on avec
+\(C=5\), puis \(C=11\) ? Pourquoi \(C=12\) échoue-t-il ?}
+\corrige{On obtient sept fenêtres, puis une seule.
+Avec \(C=12\), il manque le treizième token nécessaire à la dernière cible.
+Le constructeur refuse donc cette configuration plutôt que fabriquer
+une cible incomplète.}
+
+\fiche{36}{Du dataset au batch : empiler les fenêtres}{\src{06_train.py}{evaluate}}
+\objectif{Lire une forme \([B,T]\) et traiter correctement le dernier lot.}
+Un dataset répond à la question « quel exemple correspond à cet indice ? ».
+Un \code{DataLoader} choisit des indices, récupère les exemples, puis les
+regroupe. Avec des fenêtres de même longueur, la collation standard empile
+les entrées dans un tenseur \(X\) et les cibles dans un tenseur \(Y\).
+La dimension de batch \(B\) compte les fenêtres simultanées ; \(T\)
+compte les positions dans chacune.
+
+\notion{Un batch ne concatène pas les fenêtres en une phrase.}
+Si deux exemples sont \([1,2,3]\) et \([4,5,6]\), l'entrée du batch
+possède deux lignes et trois colonnes, non une ligne de six positions.
+Le modèle traite chaque ligne comme une séquence distincte.
+La suite d'une ligne n'est pas le début de la suivante ; aucun contexte
+linguistique ne traverse la dimension de batch.
+\[
+    X,Y\in\{0,\ldots,V-1\}^{B\times T}.
+\]
+Les entrées restent des IDs entiers, pas des vecteurs d'embedding.
+La dimension \(D\) apparaîtra seulement quand le modèle cherchera les
+représentations associées à ces IDs.
+
+Supposons dix fenêtres et une taille demandée \(B=4\).
+Comme les chargeurs du dépôt ne demandent pas \code{drop\_last=True},
+ils produisent des lots de quatre, quatre et deux fenêtres.
+Le dernier tenseur a donc la forme \([2,T]\). Une taille demandée ne
+garantit pas une taille effective constante en fin de parcours.
+Le nombre de lots est le plafond de \(M/B\).
+
+\notion{Une moyenne de pertes doit tenir compte du nombre de cibles.}
+La fonction \code{evaluate} multiplie la perte moyenne du lot par
+\code{y.numel()}, accumule cette somme, puis divise par le nombre total
+de cibles. Un petit lot n'a ainsi pas le même poids qu'un grand.
+Avec \(T\) fixe, pondérer par \(BT\) revient à pondérer par le nombre
+de fenêtres ; la formulation par token exprime directement ce qui est prédit.
+
+\attention{L'ordre dépend du chargeur et de son échantillonneur.}
+La démonstration simple et la validation utilisent un ordre séquentiel.
+L'entraînement actif choisit des fenêtres avec remise. Ce choix change
+quelles lignes sont réunies, mais ne change pas le décalage interne entre
+chaque ligne de \(X\) et sa ligne de \(Y\).
+
+\exercice{Pour dix fenêtres et \(B=4\), les pertes moyennes des trois lots
+sont 1, 2 et 5. Calculer la perte globale.}
+\corrige{Le contexte étant identique, la moyenne correcte est
+\((4\times1+4\times2+2\times5)/10=2{,}2\).
+La moyenne non pondérée \(8/3\) surévaluerait le petit dernier lot.
+Le code pondère précisément pour éviter ce biais arithmétique.}
+
+\fiche{37}{Éviter la fuite : séparer avant d'apprendre}{\src{02_dataset.py}{prepare_corpus}}
+\objectif{Définir une validation qui n'a participé ni au vocabulaire appris ni aux fenêtres d'entraînement.}
+La validation doit mesurer le comportement sur une portion tenue à l'écart
+de l'apprentissage. Une fuite de données apparaît quand une information
+de cette portion influence la construction du système évalué.
+La fuite ne se limite pas aux poids du réseau : choisir des fusions BPE
+à partir du texte de validation utilise déjà ses régularités.
+
+\notion{La séparation intervient sur le texte brut.}
+Pour \(N_{\mathrm{car}}\) caractères et une fraction \(f\), le code calcule
+la longueur d'entraînement par \code{int(total * (1 - validation\_fraction))}.
+Pour cette quantité positive, l'intention mathématique est :
+\[
+    n_{\mathrm{train}}=\lfloor N_{\mathrm{car}}(1-f)\rfloor,
+    \qquad n_{\mathrm{val}}=N_{\mathrm{car}}-n_{\mathrm{train}}.
+\]
+L'implémentation effectue le produit en virgule flottante : près d'une
+frontière entière, il faut reprendre son calcul exact pour reproduire
+le découpage. Les nombres ci-dessus comptent des caractères, pas les
+IDs BPE qui n'existent pas encore.
+
+Le préfixe sert à apprendre le tokenizer. Les deux portions sont ensuite
+encodées séparément avec ce même tokenizer et écrites dans deux fichiers.
+Les fenêtres sont enfin construites indépendamment dans chacun.
+Aucune fenêtre ne franchit la séparation. Les caractères du suffixe
+peuvent naturellement exister aussi dans le préfixe : « disjoint »
+signifie ici positions sources distinctes, pas alphabets sans intersection.
+
+Prenons « abcabcZZ » et \(f=0{,}25\). Six caractères vont au train,
+deux à la validation. Le vocabulaire caractère apprend seulement
+\code{a}, \code{b} et \code{c}, plus l'inconnu.
+Les deux \code{Z} deviennent donc deux IDs zéro. Les apprendre dans
+le vocabulaire avant la séparation masquerait cette nouveauté réelle.
+Cet exemple exact fait partie des tests du dépôt.
+
+\attention{Découper des fenêtres déjà créées est une mauvaise protection.}
+Deux fenêtres voisines se recouvrent. Si on en envoie une au train et l'autre
+en validation, une grande partie du passage évalué a déjà été utilisée.
+Le découpage brut avant fenêtrage élimine ce mécanisme, mais pas une répétition
+du même document à deux endroits du corpus.
+La déduplication des contenus constitue un contrôle supplémentaire,
+non réalisé par cette fonction.
+
+\exercice{Un collègue apprend BPE sur tout le texte, puis sépare parfaitement
+les fenêtres en deux fichiers. La validation est-elle totalement tenue à l'écart ?}
+\corrige{Non. Même sans fenêtre commune, le vocabulaire et les fusions
+ont exploité les fréquences de validation. Il faut d'abord séparer le brut,
+apprendre BPE sur le préfixe seulement, puis encoder le suffixe sans
+modifier le tokenizer. L'évaluation porte ainsi sur une représentation
+fixée avant de voir ce suffixe.}
+
+\fiche{38}{Split contigu : ce que mesure la validation}{\src{02_dataset.py}{prepare_corpus}}
+\objectif{Interpréter un score en fonction de l'ordre du corpus, sans confondre séparation et représentativité.}
+Le pipeline réserve la dernière fraction du texte à la validation.
+Ce découpage contigu conserve l'ordre local et évite le mélange de fenêtres
+voisines entre les deux ensembles. Il possède cependant une conséquence :
+la validation représente la fin du fichier, pas nécessairement la population
+de textes à laquelle on souhaite appliquer le modèle.
+
+\notion{Une distribution peut changer le long du document.}
+Imaginons un corpus original constitué de descriptions d'objets, suivies
+d'instructions techniques. Avec une coupure près du changement de thème,
+le modèle apprend surtout sur des descriptions et est évalué sur des consignes.
+Sa perte reflète alors à la fois l'apprentissage et ce changement de domaine.
+Une validation difficile n'indique pas automatiquement un défaut d'optimisation ;
+elle peut signaler que la tâche évaluée diffère de la tâche entraînée.
+
+À l'inverse, un suffixe répétant presque mot pour mot le début peut rendre
+la validation artificiellement facile. Les positions sont disjointes,
+mais le contenu ne l'est pas vraiment. Le code ne détecte ni doublons de documents ni versions proches.
+
+\notion{La proportion brute n'est pas toujours la proportion tokenisée.}
+Avec le tokenizer caractère, un caractère produit un ID, même inconnu :
+la proportion de tokens suit celle des caractères, à l'arrondi près.
+Avec BPE, des régions très répétitives peuvent être davantage regroupées.
+Une validation de 10\,\% des caractères ne garantit donc pas 10\,\%
+des tokens, ni 10\,\% des fenêtres.
+Pour un contexte \(C\) et un pas un, chaque split perd en outre \(C\)
+départs par rapport à son nombre de tokens.
+
+\attention{On ne doit pas corriger le biais en réutilisant silencieusement le train.}
+Le dépôt refuse les portions trop courtes ; il ne remplace pas la validation
+par des exemples d'entraînement. Pour une expérience mieux équilibrée,
+on peut préparer en amont un ordre de documents adapté à la question étudiée,
+en conservant des groupes indépendants. Cette opération extérieure au pipeline doit être consignée.
+Une séparation chronologique convient aussi pour évaluer la prévision de textes futurs.
+
+\exercice{Un fichier de 10\,000 caractères possède un suffixe de 1000 caractères
+dans une écriture absente du préfixe. Que prévoir en mode caractère ?}
+\corrige{Avec une fraction de 0{,}1, ce suffixe sert à la validation.
+Les caractères non observés deviennent inconnus ; le score porte donc
+en partie sur la prédiction du marqueur zéro, pas sur la restitution
+de cette écriture. Il faut rapporter la couverture du vocabulaire
+pour interpréter honnêtement la perte.}
+
+\fiche{39}{Lire par blocs Unicode : les trois passages}{\src{02_dataset.py}{_text_chunks}}
+\objectif{Comprendre une lecture bornée qui préserve les fins de ligne.}
+\code{\_text\_chunks} ouvre le fichier avec \code{encoding='utf-8'}
+et \code{newline=''}. Il demande au lecteur texte des blocs d'au plus
+4096 caractères. Le décodage UTF-8 est assuré par Python :
+la fonction n'effectue pas de découpage arbitraire dans les octets
+d'un caractère multioctet. Une ligne gigantesque reste donc lue
+par morceaux, au lieu d'être chargée intégralement avec un itérateur de lignes.
+
+\notion{Les positions comptent des caractères déjà décodés.}
+La variable \code{position} avance de \code{len(chunk)}.
+Si une borne \code{stop} est fournie, la prochaine demande de lecture
+est réduite pour ne pas la dépasser. La borne \code{start} supprime
+la partie initiale des blocs qui précède la zone souhaitée.
+Elle ne déclenche pas un saut direct à un offset binaire :
+le fichier est lu depuis son début, puis les caractères antérieurs sont ignorés.
+
+Par exemple, prenons les cinq caractères « a », « é », U+1F642, « b »,
+« c ». La plage \([1,4[\) sélectionne « é », U+1F642 et « b ».
+Chercher directement les octets de positions 1 à 4 ne produirait pas
+cette même sélection.
+L'option \code{newline=''} laisse subsister les caractères \code{\textbackslash r}
+et \code{\textbackslash n} au lieu de convertir une paire CRLF en un
+unique saut de ligne. Cette fidélité concerne la lecture ; le mode caractère
+peut encore remplacer un signe absent de son alphabet.
+
+\notion{La préparation organise trois passages logiques.}
+Le premier compte tous les caractères pour déterminer la coupure.
+Le deuxième fournit le préfixe au tokenizer ; en BPE, son budget peut
+arrêter cette consommation avant la fin du préfixe.
+Le troisième relit tout le corpus et écrit les IDs des deux splits,
+en coupant exactement le bloc qui contient leur frontière.
+Cela évite de conserver en RAM une copie complète du texte.
+
+\attention{La source doit rester stable entre ces lectures.}
+Si un autre processus ajoute, retire ou modifie du texte, le comptage,
+le vocabulaire et les IDs peuvent ne plus décrire le même corpus.
+Le programme ne prend pas de cliché immuable et ne vérifie pas une empreinte
+entre les passages. « Trois passages » décrit une stratégie de mémoire,
+pas un protocole de synchronisation avec des rédacteurs concurrents.
+Le coût d'entrées-sorties demeure réel, même quand la mémoire est bornée.
+
+\exercice{Une fin de fichier contient « A » suivi de CRLF puis « é ».
+Combien de caractères le comptage conserve-t-il ?}
+\corrige{Quatre : \code{A}, retour chariot, saut de ligne et \code{é}.
+Les octets UTF-8 sont au nombre de cinq. La préservation de CRLF empêche
+que la coupure soit calculée sur un texte implicitement raccourci
+par conversion des fins de ligne.}
+
+\fiche{40}{Préparer les artefacts : protection et limites}{\src{02_dataset.py}{prepare_corpus}}
+\objectif{Distinguer écriture préparatoire, publication et transaction globale.}
+La préparation produit deux fichiers d'IDs et un état de tokenizer.
+Pour la sortie par défaut, le répertoire concerné est
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens}.
+Avant de toucher aux sorties définitives, le code vérifie la fraction,
+le type de tokenizer, l'absence de collision avec le chemin du corpus,
+puis la longueur brute des deux portions. Il apprend ensuite le tokenizer.
+
+\notion{Le staging retarde le remplacement des sorties existantes.}
+Les IDs sont d'abord écrits sous des noms portant le suffixe
+\code{.partial}. Les compteurs de tokens doivent atteindre deux dans
+chaque split. L'état JSON est ensuite écrit sous sa forme préparatoire.
+Seulement après ces étapes, une boucle appelle \code{source.replace(target)}
+successivement pour chaque artefact.
+Un bloc \code{finally} tente de supprimer les fichiers préparatoires restants,
+y compris lorsqu'une exception interrompt la préparation.
+
+Les destinations par défaut sont
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/train.bin},
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/val.bin}
+et
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/tokenizer.json}.
+L'écriture préparatoire du premier utilise notamment
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/checkpoints/tokens/train.bin.partial}.
+Le même suffixe est appliqué aux deux autres destinations.
+
+\attention{Ce n'est pas une transaction « tout ou rien » sur le trio.}
+Même lorsqu'un remplacement individuel est atomique dans le système de fichiers,
+trois remplacements successifs ne constituent pas une seule opération atomique.
+Si le premier réussit et le deuxième échoue, le répertoire peut mélanger
+une nouvelle version et des anciennes. Le nettoyage des fichiers préparatoires
+ne remet pas le premier artefact dans son état antérieur.
+Le code n'ajoute ni verrou de répertoire ni journal de restauration,
+et ne promet pas une durabilité face à une coupure électrique.
+
+\notion{Le bon usage réduit les risques sans inventer de garanties.}
+Il faut garder la source inchangée, prévoir assez d'espace disque et
+ne pas partager un répertoire de sortie entre préparations simultanées.
+La coexistence de sorties anciennes et préparatoires peut demander davantage
+d'espace que la seule taille finale. Après une interruption pendant la
+publication, reconstruire un ensemble cohérent est plus sûr que supposer
+que tous les noms désignent la même préparation.
+
+\exercice{Une erreur « split trop court en tokens » survient avant la boucle
+de remplacement. L'ancien fichier d'entraînement est-il déjà écrasé ?
+Et si le deuxième remplacement échoue ?}
+\corrige{Dans le premier cas, l'ancien fichier reste intact et les préparatoires
+sont nettoyés : ce scénario est testé. Dans le second, le premier remplacement
+peut déjà avoir publié sa nouvelle version. Le test du premier scénario
+ne prouve donc pas l'atomicité globale du second.}
+
+\fiche{41}{Des IDs binaires de huit octets}{\src{02_dataset.py}{MemmapTokenDataset}}
+\objectif{Calculer l'espace disque et reconnaître ce que le format ne décrit pas.}
+Lors de la préparation, les IDs de chaque bloc sont convertis avec
+\code{np.asarray(..., dtype=np.int64)}, puis écrits avec \code{tofile}.
+Un entier \code{int64} occupe huit octets. Les écritures successives
+s'ajoutent dans le même flux binaire ; aucun séparateur n'est nécessaire
+entre les blocs puisque chaque valeur possède une taille fixe.
+
+\notion{La taille donne le nombre de tokens, pas leur signification.}
+Pour \(N\) IDs, le volume utile du fichier est :
+\[
+    S=8N\ \text{octets},\qquad N=S/8.
+\]
+Un million de tokens demande donc huit millions d'octets, soit environ
+7,63 Mio. Les deux unités diffèrent : un mégaoctet décimal vaut un million
+d'octets, tandis qu'un mébioctet vaut \(2^{20}\) octets.
+L'état du tokenizer et les autres sorties s'ajoutent à cette estimation.
+
+Le dataset lit la taille du fichier et refuse une longueur qui n'est pas
+multiple de huit. Cette vérification détecte, par exemple, un fichier
+de dix-neuf octets. Elle ne détecte pas un fichier arbitraire de vingt-quatre
+octets : trois groupes de huit octets peuvent être interprétés comme des
+entiers même s'ils ne viennent pas du tokenizer attendu.
+
+\notion{Le format est volontairement minimal.}
+Il n'existe ni en-tête, ni numéro de version, ni taille de vocabulaire,
+ni nom de tokenizer dans les binaires. Le type NumPy est natif :
+l'ordre des octets dépend de la plateforme. Transférer ces fichiers vers
+une architecture d'endianness différente demanderait une convention explicite
+ou une conversion ; le programme ne l'effectue pas automatiquement.
+Sur la plateforme courante, NumPy et PyTorch utilisent ici des entiers
+compatibles pour indexer les embeddings.
+
+\attention{Taille valide ne signifie pas IDs valides.}
+Les IDs produits normalement sont compris entre zéro et \(V-1\).
+\code{MemmapTokenDataset} ne vérifie pas chaque valeur contre \(V\),
+qu'il ne reçoit d'ailleurs pas en argument. Une corruption ou un tokenizer
+incohérent peut donc n'être découverte qu'au moment d'accéder aux embeddings,
+voire produire des valeurs sémantiquement fausses sans dépasser les bornes.
+Conserver l'association entre données, état et expérience reste indispensable.
+
+\exercice{Deux splits comportent 120\,000 et 30\,000 tokens.
+Quel volume binaire total prévoir ? Un fichier supplémentaire de 65 octets
+est-il un fichier d'IDs acceptable ?}
+\corrige{Il faut \(8(120\,000+30\,000)=1\,200\,000\) octets, sans compter
+le JSON ni les checkpoints. Soixante-cinq n'est pas divisible par huit :
+le constructeur le refuse. Pour autant, arrondir sa taille à 64 octets
+ne réparerait pas son contenu et ne garantirait aucune cohérence des IDs.}
+
+\fiche{42}{Fenêtres memmap : formule et pas de déplacement}{\src{02_dataset.py}{MemmapTokenDataset}}
+\objectif{Dériver le nombre d'exemples lorsque les départs sont espacés par un stride.}
+Le dataset memmap travaille sur un fichier d'IDs plutôt que sur une liste
+complète en mémoire. Son constructeur en déduit le nombre \(N\) de tokens
+à partir de la taille binaire. Il reçoit un contexte \(C\) et un pas
+\(s=\text{\code{stride}}\), tous deux entiers strictement positifs.
+Le pas règle l'espacement des départs de fenêtres, pas l'espacement
+des tokens à l'intérieur d'une fenêtre.
+
+\notion{Le départ du \(i\)-ème exemple vaut \(is\).}
+La dernière cible de cet exemple a l'indice \(is+C\).
+Pour rester dans le fichier, il faut \(is+C\leq N-1\).
+Les indices admissibles donnent donc :
+\[
+    M=\left\lfloor\frac{N-C-1}{s}\right\rfloor+1.
+\]
+Lorsque \(s=1\), cette expression se simplifie en \(N-C\),
+la formule du dataset historique. Lorsque \(N=C+1\),
+il existe exactement une fenêtre, quelle que soit la valeur positive du pas.
+Le constructeur refuse \(N\leq C\).
+
+Prenons onze IDs \([0,1,\ldots,10]\), \(C=4\) et \(s=3\).
+Les départs sont 0, 3 et 6, soit trois exemples.
+Le dernier possède \(X=[6,7,8,9]\) et \(Y=[7,8,9,10]\).
+On ne reçoit pas \([6,9,\ldots]\) : le contenu de chaque fenêtre
+reste contigu. Un départ supplémentaire à 9 dépasserait la limite.
+Avec \(s=4\), seuls les départs 0 et 4 seraient retenus ;
+certains tokens de fin ne contribueraient alors à aucune cible.
+
+\notion{Augmenter le pas change la couverture, pas seulement la vitesse.}
+Un petit pas multiplie les contextes presque identiques.
+Un grand pas réduit le nombre de fenêtres et peut laisser des intervalles
+inexploités lorsqu'il dépasse la largeur utile des exemples.
+Les comparaisons d'entraînement doivent donc enregistrer ce paramètre.
+Dans le chemin actif, le même pas est appliqué aux datasets d'entraînement
+et de validation : le score peut porter sur moins de fenêtres de validation.
+
+\attention{Les bornes sont contrôlées explicitement.}
+Un indice négatif est ramené depuis la fin, comme dans une séquence Python :
+\code{dataset[-1]} désigne le dernier exemple.
+Après cette conversion, les indices hors intervalle provoquent une erreur,
+plutôt qu'une tranche raccourcie. Les valeurs non entières sont également
+refusées par la conversion d'indice.
+
+\exercice{Pour \(N=20\), \(C=5\) et \(s=4\), calculer \(M\), le dernier départ
+et les indices sources de sa cible.}
+\corrige{On obtient \(M=\lfloor14/4\rfloor+1=4\).
+Les départs sont 0, 4, 8 et 12. La dernière cible utilise les indices
+13 à 17 inclus ; les tokens 18 et 19 ne sont pas exploités par ces fenêtres.}
+
+\fiche{43}{Memmap, copies et séparation des processus}{\src{02_dataset.py}{MemmapTokenDataset}}
+\objectif{Expliquer la mémoire économisée sans promettre une consommation nulle.}
+Un memory mapping associe le contenu d'un fichier à une zone adressable
+par le processus. Le système d'exploitation charge les pages nécessaires
+au fil des accès et peut les garder en cache. Le dataset évite ainsi
+de charger d'emblée tous les IDs dans une liste Python et ne mémorise
+pas non plus un tableau de tous les départs de fenêtres.
+
+\notion{L'ouverture est paresseuse et propre au processus courant.}
+Le constructeur place \code{\_tokens} et \code{\_pid} à \code{None}.
+Au premier accès, il ouvre \code{np.memmap(..., mode='r')} et mémorise
+l'identifiant du processus avec \code{os.getpid()}.
+Si un accès ultérieur vient d'un processus différent, le test d'identifiant
+entraîne une nouvelle ouverture. Cela importe notamment lorsqu'un chargeur
+utilise plusieurs processus de travail.
+Le chargeur actif du dépôt ne configure toutefois pas explicitement de workers
+supplémentaires.
+
+\notion{Les tenseurs retournés sont des copies de fenêtres.}
+Les tranches \(X\) et \(Y\) sont chacune copiées avant l'appel à
+\code{torch.from\_numpy}. PyTorch partage alors la mémoire de ces petits
+tableaux copiés, pas celle du fichier mappé. Modifier un élément de \(X\)
+ne modifie donc ni le fichier ni une future lecture de la même fenêtre.
+Les deux copies sont également indépendantes entre elles, malgré
+le recouvrement des positions sources.
+\[
+    S_{\mathrm{copies\ par\ exemple}}=2\times C\times8=16C
+    \quad\text{octets utiles.}
+\]
+Cette estimation ne comprend pas les objets Python, les batches empilés,
+le cache du système, les transferts vers le GPU ni les activations du modèle.
+
+\notion{La sérialisation transporte une description, pas le mapping ouvert.}
+\code{\_\_getstate\_\_} copie le dictionnaire d'attributs et remet
+\code{\_tokens} ainsi que \code{\_pid} à \code{None} dans l'état exporté.
+Après restauration, le prochain accès rouvrira le fichier.
+Le chemin absolu doit donc encore exister et désigner les mêmes données ;
+le pickle n'est pas une archive autonome du corpus.
+
+\attention{Les fichiers doivent rester inchangés pendant leur utilisation.}
+Les remplacer ou les tronquer pendant qu'un dataset les consulte invalide
+les hypothèses de taille et de cohérence. La lecture seule protège contre
+les écritures par ce mapping, pas contre un autre programme.
+
+\exercice{Avec \(C=128\), quelle taille représentent les deux copies utiles ?
+Une modification de \code{x[0]} persiste-t-elle après relecture ?}
+\corrige{Elles représentent \(16\times128=2048\) octets, soit 2 Kio,
+avant les surcoûts. La modification reste locale à la copie retournée.
+Une relecture retrouve la valeur du fichier ; cette propriété est précisément
+vérifiée dans les tests de mutation et de restauration du dataset.}
+
+\fiche{44}{Échantillonner avec remise n'est pas mélanger}{\src{06_train.py}{train}}
+\objectif{Interpréter une époque dans le chemin d'entraînement actuel.}
+L'entraînement construit un \code{RandomSampler} avec
+\code{replacement=True} et \code{num\_samples=len(dataset)}.
+Il demande donc autant de tirages qu'il existe de fenêtres, mais chaque
+tirage peut reprendre un indice déjà obtenu. Le choix évite une permutation
+complète des indices dont la taille augmenterait avec le corpus.
+Il faut distinguer cette économie de mémoire de la sélection des fenêtres
+par \code{stride}, effectuée en amont.
+
+\notion{Une permutation visite chaque indice ; des tirages avec remise non.}
+Pour quatre fenêtres, une permutation possible est \([2,0,3,1]\).
+Un parcours avec remise possible est \([2,2,0,2]\) :
+trois visites de la fenêtre 2, une de la fenêtre 0 et aucune des deux autres.
+Ces listes sont des exemples de principe, pas des sorties annoncées
+pour une graine particulière du dépôt.
+
+Si les \(M\) fenêtres ont la même probabilité à chaque tirage,
+la probabilité qu'une fenêtre donnée ne soit jamais choisie lors
+des \(M\) tirages vaut :
+\[
+    p_{\mathrm{absente}}=\left(1-\frac1M\right)^M.
+\]
+L'espérance du nombre de fenêtres distinctes visitées est alors
+\(M(1-p_{\mathrm{absente}})\). Pour un grand \(M\), cela représente
+environ 63,2\,\% du dataset. Ce pourcentage moyen ne décrit pas une
+garantie pour une époque particulière ; il résume une distribution
+de résultats possibles.
+
+\notion{La validation suit un autre protocole.}
+Son chargeur emploie \code{shuffle=False} : les fenêtres retenues par
+le pas sont parcourues séquentiellement. La validation complète n'est
+donc pas un échantillon avec remise. De plus, les fenêtres se recouvrent :
+visiter 63\,\% des fenêtres ne signifie pas avoir lu exactement 63\,\%
+des positions textuelles distinctes.
+
+\attention{Les limites d'entraînement et les appels auxiliaires comptent.}
+Un \code{max\_steps} peut interrompre l'époque avant tous les tirages.
+Avant la boucle d'optimisation, le programme prélève aussi un batch
+pour afficher les formes. Ce prélèvement utilise le générateur aléatoire,
+mais ne constitue pas une étape d'optimisation. La graine est fixée
+avec \code{torch.manual\_seed} ; la reproduction d'un ordre précis suppose
+de conserver aussi la suite des appels et l'environnement pertinent.
+
+\exercice{Avec \(M=4\), calculer la probabilité qu'une fenêtre donnée
+soit absente d'une époque complète et le nombre moyen de fenêtres distinctes.}
+\corrige{La probabilité est \((3/4)^4=81/256\), environ 31,6\,\%.
+L'espérance vaut \(4(1-81/256)=175/64\), environ 2,73 fenêtres.
+Une époque de quatre tirages ne garantit donc pas quatre exemples différents.}
+
+\fiche{45}{Corpus trop court : identifier l'étape qui refuse}{\src{02_dataset.py}{prepare_corpus}}
+\objectif{Diagnostiquer une erreur sans modifier au hasard la fraction ou le contexte.}
+La préparation et le dataset contrôlent des conditions différentes.
+Il faut d'abord compter les caractères des splits, puis les tokens produits,
+et enfin les tokens nécessaires à une fenêtre. Un texte long en caractères
+peut être court en BPE si ses motifs se regroupent fortement.
+La réussite de la préparation ne garantit donc pas que le contexte demandé
+soit utilisable.
+
+\notion{Premier seuil : les caractères bruts.}
+Après calcul de la coupure, chaque portion doit contenir au moins deux
+caractères. Sinon, le message exact est :
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,breaklines=true]
+Training and validation splits must each contain at least two characters; use a larger corpus or adjust validation_fraction.
+\end{lstlisting}
+Cette erreur survient avant l'apprentissage du tokenizer et l'écriture
+des sorties préparatoires. Elle s'applique notamment à un corpus vide.
+Une fraction hors intervalle, infinie ou non numérique au sens de NaN
+est rejetée encore plus tôt par le contrôle de fraction.
+
+\notion{Deuxième seuil : les tokens encodés.}
+Après écriture préparatoire, chaque split doit contenir au moins deux IDs.
+Par exemple, si l'entraînement n'en produit qu'un, le message exact est
+\code{Training split has only 1 tokens; at least two are required.}
+La formulation conserve \code{tokens} même pour un seul élément.
+Pour la validation, le premier mot devient \code{Validation}.
+Ce contrôle utilise le résultat effectif du tokenizer, pas une estimation
+fondée sur le nombre de caractères.
+
+\notion{Troisième seuil : le contexte.}
+\code{MemmapTokenDataset} exige au moins \(C+1\) tokens.
+Son message exact est :
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,breaklines=true]
+Token file must contain at least context_length + 1 tokens.
+\end{lstlisting}
+La classe historique utilise une autre formulation :
+\code{Le corpus doit être plus long que context\_length.}
+Ne pas confondre ces deux messages aide à retrouver le parcours réellement
+exécuté. Les contextes ou pas non positifs, fractionnaires ou booléens
+sont également refusés par le constructeur memmap.
+
+\attention{Réduire le contexte modifie la tâche ; recycler le train fausse l'évaluation.}
+On peut fournir davantage de texte ou ajuster la fraction pour agrandir
+la portion limitante. Réduire \(C\) est aussi possible, mais raccourcit
+l'historique accessible. Le code ne remplit pas les splits par répétition
+et ne substitue jamais le train à une validation insuffisante.
+
+\exercice{Une préparation donne 80 tokens d'entraînement et 12 de validation.
+Que se passe-t-il avec \(C=16\), puis \(C=11\), à pas un ?}
+\corrige{La préparation passe les deux seuils de tokens.
+Avec \(C=16\), la validation échoue au troisième seuil.
+Avec \(C=11\), elle possède une fenêtre, contre 69 pour l'entraînement.
+Le programme peut alors construire les datasets, mais cette validation
+minuscule reste statistiquement fragile.}
+
+\fiche{46}{Lire les tests : preuves locales et angles morts}{\src{02_dataset.py}{MemmapTokenDataset}}
+\objectif{S'appuyer sur les assertions existantes sans leur attribuer une garantie universelle.}
+Le fichier
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/tests/test_data.py}
+utilise \code{unittest}, NumPy et PyTorch. Les cas construisent de petits
+corpus contrôlés et vérifient des propriétés observables du pipeline.
+Lire un test consiste à identifier ses données, son action et son assertion.
+Le nom d'un test suggère son intention ; seules les assertions montrent
+ce qui est effectivement vérifié.
+
+\notion{Les tests de tokenisation couvrent plusieurs contrats distincts.}
+Le parcours caractère vérifie un aller-retour Unicode, le remplacement
+d'un inconnu, la restauration JSON et la collecte d'alphabet par flux.
+Un import BPE volontairement bloqué démontre que le mode caractère reste
+utilisable et que le mode BPE signale la dépendance absente.
+Le test du budget réduit les constantes à sept et trois afin de comparer
+exactement les blocs produits. Ce n'est pas une mesure de mémoire
+sur un véritable million de caractères.
+
+Les cas BPE vérifient, lorsque la bibliothèque est disponible,
+le décodage d'Unicode absent de l'apprentissage, les retours de ligne,
+le marqueur littéral et la restauration de l'état.
+Ils sont décorés par \code{skipUnless} : une suite réussie avec ces cas
+ignorés n'a pas exercé la fonctionnalité BPE.
+Il faut donc lire aussi les tests sautés, pas seulement l'absence d'échec.
+
+\notion{Les tests de corpus contrôlent la séparation et les accès bornés.}
+Un suffixe \code{ZZ} prouve que ces caractères n'entrent pas dans
+l'alphabet appris. Une grande ligne Unicode instrumente les appels à
+\code{read} et exige une taille positive ne dépassant pas le bloc configuré.
+Le test protège donc contre une lecture textuelle non bornée,
+mais ne mesure pas toute la RAM du processus.
+Un encodeur simulé produisant un seul token vérifie la conservation
+d'un ancien artefact avant publication et le nettoyage des préparatoires.
+
+\notion{Les tests memmap relient le nouveau parcours au parcours simple.}
+Ils contrôlent le pas, les indices négatifs, les bornes, le type des tenseurs,
+l'indépendance des copies et une restauration par pickle.
+Ils comparent aussi toutes les fenêtres d'un petit exemple avec
+\code{NextTokenDataset}, puis vérifient un batch et son décalage.
+Les entrées invalides et les tailles binaires mal formées ont leurs cas dédiés.
+
+\exercice{Ces tests prouvent-ils une publication atomique du trio et
+le fonctionnement de plusieurs workers sur tous les systèmes ?}
+\corrige{Non. Le cas de préservation échoue avant les remplacements ;
+il ne simule pas une panne au milieu de leur boucle.
+Le pickle démontre une remise à zéro du mapping, mais n'est pas une campagne
+multiprocessus multiplateforme. Ces limites n'annulent pas les preuves locales :
+elles en délimitent honnêtement la portée.}
+
+\fiche{47}{Atelier : préparer puis observer char et BPE}{\src{06_train.py}{main}}
+\objectif{Planifier deux expériences comparables sans annoncer de résultats non mesurés.}
+Les commandes ci-dessous sont à exécuter par le lecteur ; elles ne constituent
+pas un compte rendu d'exécution. Elles utilisent le corpus pédagogique fourni,
+un contexte volontairement court et deux répertoires distincts.
+Elles illustrent le chemin actif : même avec deux étapes d'optimisation,
+la préparation des données précède le modèle et la validation reste effectuée.
+La limite d'étapes ne transforme pas la préparation en lecture partielle du corpus.
+
+\notion{Commencer par le mode caractère, sans dépendance BPE.}
+Après installation des dépendances ordinaires décrites dans
+\path{/home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/requirements.txt},
+on peut lancer :
+\begin{lstlisting}[language=bash,basicstyle=\ttfamily\scriptsize,breaklines=true]
+python /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/06_train.py \
+    --corpus /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/data/tiny_corpus.txt \
+    --checkpoint-dir /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/atelier-char \
+    --tokenizer char --preset tiny --context-length 4 \
+    --validation-fraction 0.2 --batch-size 2 --epochs 1 \
+    --max-steps 2 --device cpu --seed 42
+\end{lstlisting}
+Relever le vocabulaire effectif, les formes affichées et les tailles
+binaires des deux splits dans le sous-répertoire de tokens de cette sortie.
+Diviser chaque taille binaire par huit donne son nombre d'IDs.
+Pour \(C=4\) et le pas par défaut, soustraire quatre donne le nombre
+de fenêtres. Ce calcul vérifie les unités, sans exiger une bonne qualité
+de génération après seulement deux mises à jour.
+
+\notion{Passer ensuite au mode BPE dans une autre sortie.}
+\begin{lstlisting}[language=bash,basicstyle=\ttfamily\scriptsize,breaklines=true]
+python -m pip install -r /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/requirements-bpe.txt
+python /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/06_train.py \
+    --corpus /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/data/tiny_corpus.txt \
+    --checkpoint-dir /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/atelier-bpe \
+    --tokenizer bpe --vocab-size 280 --preset tiny --context-length 4 \
+    --validation-fraction 0.2 --batch-size 2 --epochs 1 \
+    --max-steps 2 --device cpu --seed 42
+\end{lstlisting}
+Ces deux répertoires évitent de remplacer les artefacts caractère par
+un état BPE incompatible. Le petit corpus permet une manipulation,
+mais le guide avertit qu'il ne suffit pas à apprendre un BPE réellement utile.
+Pour une étude linguistique, il faudrait fournir un corpus personnel
+substantiel et représentatif, avec le même protocole de séparation.
+
+\attention{Comparer des unités équivalentes.}
+Les nombres de tokens et les pertes peuvent changer parce que les unités
+changent. Une perte BPE plus petite ne prouverait pas à elle seule
+une meilleure modélisation du même texte. Consigner aussi le corpus,
+la fraction, le contexte, la graine et le vocabulaire effectif.
+Ne pas lancer simultanément deux préparations dans une même sortie.
+
+\exercice{Les deux expériences produisent-elles nécessairement le même nombre
+de fenêtres puisque leur corpus et leur fraction sont identiques ?}
+\corrige{Non. La coupure brute est la même, mais BPE peut regrouper plusieurs
+caractères par token. Il faut recalculer les fenêtres à partir des tailles
+binaires réellement obtenues. Aucune valeur de perte, de durée ou de compression
+n'est présumée dans cet atelier.}
+
+\fiche{48}{Auditer tout le pipeline avant le Transformer}{\src{02_dataset.py}{prepare_corpus}}
+\objectif{Relier les unités, les invariants et les limites dans un diagnostic complet.}
+Avant d'étudier l'attention, on peut déjà auditer les données sans entraîner
+un grand réseau. Le trajet est désormais explicite : texte UTF-8 stable,
+comptage Unicode, séparation contiguë, apprentissage du tokenizer sur le train,
+encodage par blocs, publication des artefacts, fenêtres, puis batches.
+Chaque flèche change la représentation ou l'organisation des informations ;
+aucune ne doit changer silencieusement la question évaluée.
+
+\notion{Quatre registres évitent les confusions.}
+Le registre textuel compte caractères et octets sources.
+Le registre de tokenisation fixe le vocabulaire \(V\), les IDs et l'état
+nécessaire à leur interprétation. Le registre du dataset compte \(N\) tokens,
+un contexte \(C\), un pas \(s\) et \(M\) fenêtres.
+Enfin, le registre du calcul compte \(B\) fenêtres par batch et \(T=C\)
+positions par fenêtre. Les dimensions \(D\), les \(H\) têtes, les \(F\)
+unités du réseau intermédiaire et les \(L\) couches appartiendront au modèle,
+pas au format binaire d'entrée.
+
+\notion{Un invariant doit être formulé avec son domaine de validité.}
+Le décalage impose \(X_{t+1}=Y_t\) aux positions internes d'une fenêtre.
+La couverture caractère peut perdre les signes inconnus.
+Le byte-level permet leur représentation, mais les frontières de blocs
+peuvent changer les IDs. Le memmap évite la matérialisation du corpus entier,
+sans supprimer les copies ni le cache du système.
+La séparation empêche les fenêtres communes aux deux splits,
+sans rechercher les doublons textuels éloignés.
+
+\attention{L'audit doit inclure l'exploitation, pas seulement les formules.}
+Un corpus modifié pendant les passages, un tokenizer remplacé isolément,
+un fichier tronqué pendant sa lecture ou deux écrivains concurrents
+peuvent invalider des calculs pourtant corrects. Conserver une source stable,
+des sorties distinctes et des paramètres consignés est une partie
+de la reproductibilité. Les tests ne transforment pas le staging en transaction globale.
+
+\exercice{On prépare « abcabcZZ » en mode caractère avec \(f=0{,}25\),
+\(C=1\), \(s=2\) et \(B=2\). Donner vocabulaire, tailles binaires,
+fenêtres et limite d'interprétation de la validation.}
+\corrige{Le train est « abcabc », la validation « ZZ ».
+La table est \code{['<unk>', 'a', 'b', 'c']}.
+Les IDs sont \([1,2,3,1,2,3]\) et \([0,0]\), soit 48 et 16 octets.
+Le train compte \(\lfloor(6-1-1)/2\rfloor+1=3\) fenêtres,
+de départs 0, 2 et 4 : les paires sont \([1]\to[2]\),
+\([3]\to[1]\), \([2]\to[3]\).
+La validation possède une paire \([0]\to[0]\).
+Ses deux caractères sont inconnus : prédire correctement zéro ne signifie
+pas avoir appris à produire « Z ». Les lots de train contiennent deux,
+puis une fenêtre lors d'un parcours complet ; avec remise, leurs indices
+peuvent se répéter.}

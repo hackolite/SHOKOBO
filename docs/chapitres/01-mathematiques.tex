@@ -55,8 +55,8 @@ positions, non sur les six positions elles-mêmes.}
 Une fonction associe une sortie à une entrée autorisée. Au lycée,
 \(f(x)=2x+1\) signifie qu'une même recette s'applique à chaque valeur
 de \(x\). Un programme peut recevoir une liste plutôt qu'un seul nombre.
-\code{SimpleTokenizer.encode}, défini dans
-\src{01_tokenizer.py}{SimpleTokenizer.encode}, reçoit un texte et renvoie
+\code{SimpleTokenizer.encode}, la méthode d'encodage du tokeniseur,
+reçoit un texte et renvoie
 une liste d'entiers. Son domaine n'est donc pas celui d'une fonction
 polynomiale, mais l'idée d'une transformation bien définie reste identique.
 
@@ -80,6 +80,10 @@ Pour \(s=(4,7,2,9,3)\), \(i=1\) et \(C=3\), l'entrée utilise les
 indices 1, 2, 3 : elle vaut \((7,2,9)\). La cible utilise les indices
 2, 3, 4 : elle vaut \((2,9,3)\). Les deux listes ont la même longueur,
 mais leurs contenus sont décalés.
+
+Lorsqu'on écrit une formule, annoncer le début des indices évite
+une ambiguïté fréquente : le « troisième élément » est ici
+celui d'indice deux, pas celui d'indice trois.
 
 Il faut un token supplémentaire pour connaître la dernière cible.
 Avec un pas de déplacement égal à un, les débuts admissibles vont
@@ -178,6 +182,10 @@ Une addition ne concatène donc pas les listes : sa dimension reste 3.
 Au contraire, les placer bout à bout donnerait six coordonnées et
 constituerait une autre opération.
 
+Soustraire deux vecteurs fonctionne de la même manière.
+Le vecteur différence décrit un déplacement coordonnée par coordonnée ;
+sa norme mesure la distance entre les deux représentations.
+
 Dans le mode positionnel appris, \code{tok\_emb + pos\_emb} ajoute
 un vecteur lié au token et un vecteur lié à sa position.
 Pour un token représenté par \((1,0,-1)\) et une position représentée
@@ -203,7 +211,7 @@ Sa norme vaut \(\sqrt{1^2+2^2}=\sqrt5\).
 Le vecteur \(h\) possède toujours deux coordonnées : l'addition
 positionnelle n'a ni ajouté un token ni doublé la dimension.}
 
-\fiche{5}{Produit scalaire : comparer et combiner}{\src{03_attention.py}{main}}
+\fiche{5}{Produit scalaire : comparer et combiner}{\src{03_attention.py}{scaled_dot_product_attention}}
 \objectif{Calculer un score à partir de deux vecteurs et distinguer ce score d'une probabilité.}
 
 Le produit scalaire de deux vecteurs de même dimension consiste à
@@ -220,6 +228,11 @@ apparier. Le produit scalaire diffère du produit coordonnée par
 coordonnée : ce dernier conserverait la liste \((3,0,-4)\),
 alors que le produit scalaire la réduit à sa somme.
 
+L'ordre des deux vecteurs ne change pas ce nombre, puisque chaque
+produit de réels peut être inversé. En revanche, permuter les
+coordonnées d'un seul vecteur modifie généralement les associations
+et donc le score.
+
 \notion{Une lecture comme combinaison pondérée.}
 Si \(u\) contient des observations et \(v\) des coefficients,
 le score \(u\cdot v\) mesure leur combinaison. Un coefficient nul
@@ -234,7 +247,7 @@ peut aussi venir de contributions qui s'annulent :
 \((1,1)\cdot(1,-1)=1-1=0\). Il n'implique donc pas que toutes
 les coordonnées soient nulles.
 
-Dans \src{03_attention.py}{main}, les exemples appellent
+Les exemples du script appellent la fonction
 \code{scaled\_dot\_product\_attention}. La ligne
 \code{q @ k.transpose(-2, -1)} calcule de nombreux produits
 scalaires à la fois. Nous étudierons leur organisation plus tard ;
@@ -309,7 +322,7 @@ Le résultat est une matrice \(2\times2\). Le nombre de lignes
 de sortie dépend du nombre de tokens consultés, pas de la taille
 totale du vocabulaire.}
 
-\fiche{7}{Produit matriciel : un calcul complet}{\src{03_attention.py}{main}}
+\fiche{7}{Produit matriciel : un calcul complet}{\src{03_attention.py}{pytorch_attention_example}}
 \objectif{Effectuer chaque case d'un produit et comprendre le rôle de la dimension commune.}
 
 Multiplier deux matrices n'est pas multiplier simplement leurs cases.
@@ -339,8 +352,7 @@ plus dans la forme finale.
 
 \notion{Le code applique cette recette en parallèle.}
 L'opérateur Python \code{@} réalise le produit matriciel pour
-des tableaux à deux dimensions. Dans
-\src{03_attention.py}{main}, l'exemple
+des tableaux à deux dimensions. Dans le script, l'exemple
 \code{pytorch\_attention\_example} construit notamment
 \code{q = x @ wq}. La matrice \code{wq} y est une matrice
 explicite de coefficients ; ne lui attribuons pas automatiquement
@@ -351,6 +363,12 @@ coefficients. On peut donc traiter plusieurs positions sans écrire
 une boucle Python pour chacune. L'opération ne mélange pas ici
 les lignes d'entrée entre elles : chaque ligne produit sa propre
 ligne de sortie.
+
+Dans l'exemple chiffré, chaque case demande trois multiplications
+et deux additions. Quatre cases nécessitent donc douze multiplications
+et huit additions. Ce comptage élémentaire permet déjà d'anticiper
+le travail demandé lorsque la longueur des lignes ou le nombre
+de sorties augmente.
 
 L'ordre des facteurs importe. Dans notre exemple, \(AR\) a la
 forme \(2\times2\), mais \(RA\) aurait la forme \(3\times3\).
@@ -376,6 +394,8 @@ a la forme \(m\times n\), alors \(A^{\mathsf T}\) a la forme
 \(n\times m\), et sa case \((j,i)\) contient \(A_{ij}\).
 Les nombres ne changent pas, seule leur organisation change.
 Deux transpositions successives rendent la matrice initiale.
+Le nombre total de coefficients est conservé, même si le tableau
+devient plus haut ou plus large.
 \[
  \begin{pmatrix}1&2&3\\4&5&6\end{pmatrix}^{\mathsf T}
  =\begin{pmatrix}1&4\\2&5\\3&6\end{pmatrix}.
@@ -407,6 +427,13 @@ Les axes précédents, dédiés notamment aux lots et aux têtes,
 restent en place. Échanger tous les axes d'un tableau plus grand
 serait donc une opération différente.
 
+Une autre règle utile est que la transposée d'un produit inverse
+l'ordre des facteurs : \((AR)^{\mathsf T}=R^{\mathsf T}A^{\mathsf T}\).
+On peut le vérifier sur chaque case en développant la somme.
+Cette inversion d'ordre est indispensable : garder le même ordre
+donnerait souvent des dimensions incompatibles, avant même de
+considérer les valeurs.
+
 Un contrôle de dimensions doit précéder les valeurs numériques.
 Avec \(T=5\) et \(d_k=2\), le produit attendu est
 \((5\times2)(2\times5)\), donc \(5\times5\).
@@ -422,3 +449,996 @@ et \((2,-2)\). La case \((1,0)\) vaut
 \(0\times3+2\times1=2\) : elle compare la deuxième ligne
 de \(Q\) à la première ligne de \(K\), conformément à
 notre convention d'indices commençant à zéro.}
+
+\fiche{9}{Tenseurs : lire les axes B, T et D}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Suivre les tableaux du modèle grâce à la signification de leurs axes.}
+
+Dans ce manuel, un tenseur est un tableau de nombres muni de zéro,
+un ou plusieurs axes. Un scalaire n'a aucun axe ; un vecteur en a
+un ; une matrice en a deux. Cette définition pratique suffit pour
+lire PyTorch, sans introduire la théorie géométrique générale des
+tenseurs. Le nombre d'axes et la taille de chaque axe sont deux
+informations différentes.
+
+L'entrée \code{x} de \code{MiniGPT.forward} a la forme \([B,T]\).
+\(B\) compte les exemples réunis dans le lot ; \(T\) compte les
+tokens de chaque exemple. Ainsi \code{x[1, 2]} est l'identifiant du
+troisième token du deuxième exemple. Après consultation de la table,
+\code{tok\_emb} a la forme \([B,T,D]\), car chaque identifiant
+a été remplacé par \(D\) coordonnées.
+\[
+ [B,T]\longrightarrow[B,T,D]\longrightarrow[B,T,V].
+\]
+La dernière forme appartient aux logits : chaque position reçoit
+un score pour chacun des \(V\) tokens du vocabulaire.
+L'axe des caractéristiques \(D\) a été remplacé par l'axe des
+classes \(V\), mais les axes des exemples et des positions restent
+présents.
+
+\notion{Lire une case avant de compter toutes les cases.}
+Dans un tenseur \(h\), \(h_{b,t,j}\) signifie « coordonnée \(j\)
+de la position \(t\) dans l'exemple \(b\) ». Cette phrase distingue
+les rôles des indices. Pour \(B=2,T=3,D=4\), le tenseur contient
+\(2\times3\times4=24\) nombres. Il possède trois axes, pas
+vingt-quatre dimensions au sens du nombre d'axes.
+
+La dimension cachée \(D\) ne doit pas être confondue avec le
+contexte maximal \(C\). On peut soumettre une séquence plus courte
+que \(C\) sans changer \(D\). De même, ajouter des couches \(L\)
+augmente le nombre de transformations, pas le nombre de positions.
+Le réseau intermédiaire emploie une largeur \(F\), puis revient à \(D\).
+
+Au moment du calcul de la perte, \code{reshape(-1, logits.size(-1))}
+réunit les axes \(B,T\) en un axe de \(BT\) prédictions.
+Les cibles sont aplaties dans le même ordre. Il faut préserver
+cet alignement : avoir autant de lignes que de cibles ne suffit
+pas si elles ont été permutées différemment.
+
+\exercice{Avec \(B=3,T=5,D=8,V=11\), donner les formes et
+nombres d'éléments des représentations et des logits. Quelle est
+la forme des logits aplatis pour la perte ?}
+\corrige{Les représentations ont la forme \([3,5,8]\), soit
+120 nombres. Les logits ont la forme \([3,5,11]\), soit 165 nombres.
+L'aplatissement produit \([15,11]\), accompagné de 15 cibles :
+on conserve onze choix pour chacune des quinze prédictions.}
+
+\fiche{10}{Diffusion, view, transpose et contiguous}{\src{03_attention.py}{MultiHeadSelfAttention.forward}}
+\objectif{Distinguer une opération sur les valeurs d'une réorganisation des axes et de la mémoire.}
+
+La \emph{diffusion}, ou broadcasting, rend certaines opérations
+possibles entre formes différentes. PyTorch aligne les axes depuis
+la droite. Sur chaque axe, les tailles doivent être égales, ou l'une
+doit valoir un ; les axes absents se comportent comme des axes
+de taille un. La valeur singleton est réutilisée aux positions nécessaires.
+
+Dans \code{MiniGPT.forward},
+\code{tok\_emb} a la forme \([B,T,D]\) et \code{pos\_emb}
+la forme \([1,T,D]\). Leur addition réutilise les mêmes
+représentations positionnelles pour chaque exemple. Le résultat
+est \([B,T,D]\), sans qu'il soit nécessaire d'écrire \(B\)
+copies de la table positionnelle.
+
+\notion{Changer de forme ne signifie pas permuter.}
+\code{view} réinterprète une organisation compatible des mêmes
+éléments. Il conserve leur nombre et exige des contraintes sur
+leur disposition en mémoire. Une suite de 12 valeurs peut devenir
+un tableau \([3,4]\), mais pas \([3,5]\). La valeur \(-1\)
+demande à PyTorch de déduire une taille ; une seule dimension
+peut être ainsi laissée indéterminée.
+\[
+ [B,T,D]\xrightarrow{\text{view}}[B,T,H,d_k]
+ \xrightarrow{\text{transpose}(1,2)}[B,H,T,d_k],
+ \qquad D=H d_k.
+\]
+Ce sont les opérations utilisées pour \code{q}, \code{k} et
+\code{v} dans \code{MultiHeadSelfAttention.forward}.
+La première sépare les coordonnées en \(H\) groupes ; la seconde
+échange les axes des positions et des groupes. Le détail du
+calcul des têtes appartient aux fiches sur l'attention.
+
+\code{transpose} peut produire une vue dont les éléments voisins
+logiquement ne sont plus voisins dans le stockage. Les pas mémoire,
+appelés strides, décrivent alors comment retrouver chaque élément.
+Une telle vue n'est pas nécessairement contiguë.
+
+À la sortie, le code utilise
+\code{transpose(1, 2).contiguous().view(...)}.
+\code{contiguous} garantit une disposition contiguë, en effectuant
+une copie si nécessaire, avant la réunion des groupes.
+\code{reshape} peut choisir une vue ou une copie ; il ne remplace
+cependant jamais une permutation d'axes manquante.
+
+\exercice{Une matrice contient les lignes \((0,1,2)\) et
+\((3,4,5)\). Comparer sa transposée et sa réorganisation
+contiguë en forme \([3,2]\). Pourquoi le même nombre d'éléments
+ne garantit-il pas le même résultat ?}
+\corrige{La transposée contient les lignes \((0,3),(1,4),(2,5)\).
+Un \code{view(3, 2)} sur la matrice initiale contiguë donne
+\((0,1),(2,3),(4,5)\). Les deux résultats contiennent six nombres,
+mais ils n'associent pas les mêmes valeurs à chaque indice.
+Le premier échange les axes ; le second redécoupe l'ordre existant.}
+
+\fiche{11}{Fonctions affines et orientation de nn.Linear}{\src{04_transformer.py}{FeedForward}}
+\objectif{Passer de \(ax+b\) à plusieurs entrées et sorties sans inverser les poids PyTorch.}
+
+Au lycée, une fonction affine s'écrit \(f(x)=ax+b\).
+Le coefficient \(a\) règle la variation ; \(b\) fixe la valeur
+en zéro. Pour plusieurs entrées, on remplace \(ax\) par une
+somme pondérée. Pour plusieurs sorties, on apprend une somme
+différente pour chacune.
+
+Un module \code{nn.Linear(D, F)} reçoit \(D\) coordonnées et
+produit \(F\) coordonnées. Malgré son nom, il réalise par défaut
+une application \emph{affine}, car il contient un biais.
+La transformation devient linéaire au sens mathématique si ce biais
+est nul ou désactivé.
+\[
+ y_j=\sum_{i=0}^{D-1}W_{ji}x_i+b_j,
+ \qquad W\in\mathbb{R}^{F\times D},\quad b\in\mathbb{R}^{F}.
+\]
+Attention à l'ordre : \code{weight} est stocké sous la forme
+\code{[out\_features, in\_features]}, donc \([F,D]\).
+Si les entrées sont les lignes d'une matrice \(X\), le calcul
+s'écrit \(Y=XW^{\mathsf T}+b\), avec diffusion du biais sur
+les lignes. Écrire \(XW\) utiliserait une autre convention.
+
+\notion{Un exemple à deux sorties.}
+Prenons \(x=(2,-1)\), les lignes de poids \((3,4)\) et
+\((-2,1)\), puis \(b=(1,-3)\).
+La première sortie vaut \(3\times2+4\times(-1)+1=3\).
+La seconde vaut \((-2)\times2+1\times(-1)-3=-8\).
+Le résultat \((3,-8)\) contient deux scores sans contrainte
+de positivité.
+
+Dans \code{FeedForward.net}, la première couche passe de \(D\)
+à \(F\), une fonction GELU transforme les valeurs, puis une
+seconde couche revient de \(F\) à \(D\). Les mêmes paramètres
+s'appliquent à chaque position de chaque exemple. La forme
+\([B,T,D]\) devient donc \([B,T,F]\), puis \([B,T,D]\).
+
+Sans transformation non affine entre deux couches affines,
+leur composition serait encore affine : développer
+\(a_2(a_1x+b_1)+b_2\) donne
+\((a_2a_1)x+(a_2b_1+b_2)\).
+La fonction intermédiaire apporte donc une capacité que la simple
+succession de sommes pondérées n'aurait pas.
+
+Le biais agit indépendamment de l'entrée : si toutes les
+coordonnées reçues sont nulles, la sortie est exactement le
+vecteur des biais. C'est une manière simple de vérifier son
+rôle et son orientation. Une valeur de biais existe par sortie,
+pas par entrée ; elle est partagée entre les positions comme
+les coefficients de la matrice.
+
+\exercice{Combien de paramètres possède \code{nn.Linear(3, 2)}
+avec biais ? Pour une entrée \([4,5,3]\), quelle forme sort
+du module ?}
+\corrige{La matrice contient \(2\times3=6\) coefficients et
+le biais contient deux nombres, soit huit paramètres. La sortie
+a la forme \([4,5,2]\). Les vingt positions partagent ces huit
+paramètres : leur nombre ne se multiplie pas par le nombre
+d'exemples ou de tokens traités.}
+
+\fiche{12}{Exponentielle et stabilité numérique}{\src{03_attention.py}{softmax_manual}}
+\objectif{Comprendre pourquoi une formule exacte peut échouer avec des nombres flottants.}
+
+La fonction exponentielle, notée \(\exp(x)=e^x\), associe un
+nombre strictement positif à tout réel fini \(x\). Elle vaut un
+en zéro, augmente avec \(x\), et transforme les additions en
+multiplications : \(e^{a+b}=e^ae^b\). Pour un nombre négatif,
+\(e^{-a}=1/e^a\). Ainsi une entrée négative ne produit jamais
+une exponentielle négative.
+
+Quelques repères suffisent : \(e\approx2{,}718\),
+\(e^2\approx7{,}389\) et \(e^{-2}\approx0{,}1353\).
+Une différence additive de un dans l'entrée multiplie la sortie
+par environ \(2{,}718\). Cette croissance rapide rend l'exponentielle
+utile pour comparer des scores, mais délicate numériquement.
+
+\notion{La machine n'utilise pas tous les réels.}
+Un format flottant dispose d'une précision et d'une plage finies.
+Une valeur trop grande peut devenir \(+\infty\) : c'est un
+débordement. Une valeur positive trop petite peut être arrondie
+à zéro. En float32, \(e^{1000}\) déborde largement, bien
+que ce nombre existe parfaitement en mathématiques.
+
+La fonction \code{softmax\_manual}, définie dans le script
+d'attention, commence par soustraire
+le maximum de chaque ligne avant \code{torch.exp}.
+Pour les scores \((1000,999)\), elle exponentie donc \((0,-1)\).
+\[
+ \frac{e^{1000}}{e^{1000}+e^{999}}
+ =\frac{1}{1+e^{-1}}\approx0{,}7311.
+\]
+Le quotient initial pourrait devenir une opération indéfinie
+entre infinis dans le programme naïf. Le quotient réécrit utilise
+des nombres modestes et donne la même valeur mathématique.
+Nous démontrerons l'invariance générale du softmax plus loin.
+
+Après soustraction d'un maximum fini, toutes les exponentielles
+sont au plus égales à un et au moins l'une vaut exactement un.
+Leur somme ne peut donc pas s'annuler. Des termes très petits
+peuvent encore être arrondis à zéro, mais ils ne font plus
+déborder le calcul des exponentielles.
+
+La précision limitée affecte aussi les additions : ajouter une
+très petite quantité à une très grande peut laisser le résultat
+inchangé après arrondi. Réécrire une formule n'est donc pas
+seulement une question de présentation.
+
+\attention{La stabilisation suppose une ligne contenant un score
+fini et aucun \(+\infty\). Si tous les scores valent
+\(-\infty\), soustraire leur maximum produit des valeurs
+indéfinies. Masquer toutes les possibilités n'est pas une
+distribution de probabilités valide.}
+
+\exercice{Stabiliser les scores \((100,102,101)\), puis donner
+les trois exponentielles obtenues et la plus grande probabilité.}
+\corrige{On soustrait 102, d'où \((-2,0,-1)\).
+Les exponentielles valent environ \((0{,}1353,1,0{,}3679)\).
+Leur somme vaut \(1{,}5032\), donc la probabilité maximale
+vaut environ \(1/1{,}5032=0{,}6652\), à l'indice 1.
+Le décalage n'a pas changé l'ordre des scores.}
+
+\fiche{13}{Logarithme naturel : transformer les produits en sommes}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Donner un sens au logarithme d'une probabilité et à son opposé.}
+
+Le logarithme naturel \(\ln\) est la fonction réciproque de
+l'exponentielle. Pour \(x>0\), \(\ln(x)\) est l'unique réel
+dont l'exponentielle vaut \(x\). Ainsi \(\ln(1)=0\),
+\(\ln(e)=1\) et \(\ln(e^{-2})=-2\).
+Son domaine réel exclut zéro et les nombres négatifs.
+
+Cette fonction est croissante : une probabilité plus grande possède
+un logarithme plus grand. Pourtant, entre zéro et un, le logarithme
+est négatif. Par exemple, \(\ln(0{,}5)\approx-0{,}6931\)
+et \(\ln(0{,}1)\approx-2{,}3026\).
+Le signe négatif ne signale pas une erreur ; il est la conséquence
+normale d'une entrée inférieure à un.
+\[
+ \ln(ab)=\ln(a)+\ln(b),\qquad
+ \ln(a/b)=\ln(a)-\ln(b),\qquad a,b>0.
+\]
+Ces identités se comprennent en écrivant \(a=e^u\), \(b=e^v\) :
+leur produit vaut \(e^{u+v}\), donc son logarithme vaut \(u+v\).
+Attention, aucune identité analogue ne donne
+\(\ln(a+b)=\ln(a)+\ln(b)\).
+
+\notion{Mesurer la surprise d'une observation.}
+Pour une cible observée de probabilité \(p\), la quantité
+\(-\ln p\) est positive ou nulle. Elle vaut zéro si \(p=1\)
+et augmente fortement quand \(p\) approche zéro.
+Cette mesure pénalise donc davantage une cible jugée très improbable.
+Elle est exprimée en \emph{nats} lorsqu'on utilise le logarithme
+naturel, plutôt qu'en bits.
+
+Dans \code{MiniGPT.forward}, \code{F.cross\_entropy} calcule
+une perte liée à ce logarithme, directement à partir des logits.
+Le code évite de demander explicitement le logarithme de
+probabilités déjà arrondies à zéro. Les formules détaillées de
+cette perte apparaîtront après l'étude du softmax.
+
+Pour une suite de prédictions, multiplier beaucoup de probabilités
+peut donner un nombre extrêmement petit. Dix probabilités égales
+à \(0{,}1\) donnent \(10^{-10}\) ; leurs logarithmes s'additionnent
+et donnent \(10\ln(0{,}1)\approx-23{,}026\).
+La représentation logarithmique garde ainsi une échelle plus maniable
+sans modifier l'ordre de préférence entre probabilités positives.
+
+Le logarithme mesure aussi des améliorations relatives.
+Passer d'une probabilité à une probabilité deux fois plus grande
+diminue la surprise de \(\ln2\), quelle que soit la valeur
+initiale, tant que la nouvelle probabilité reste admissible.
+Ce comportement diffère d'une erreur mesurée par simple
+soustraction des probabilités : le gain dépend d'un rapport,
+pas seulement d'un écart absolu.
+
+\exercice{Deux cibles successives reçoivent les probabilités
+\(1/2\) et \(1/4\). Calculer le produit, son logarithme et
+la somme des surprises.}
+\corrige{Le produit vaut \(1/8\). Comme \(8=2^3\),
+\(\ln(1/8)=-3\ln2\approx-2{,}0794\).
+La somme des surprises vaut
+\(\ln2+\ln4=3\ln2\approx2{,}0794\).
+On retrouve exactement l'opposé du logarithme du produit :
+les contributions locales s'additionnent.}
+
+\fiche{14}{Probabilités conditionnelles : prévoir avec un contexte}{\src{07_generate.py}{generate}}
+\objectif{Interpréter la barre verticale d'une probabilité sans supposer l'indépendance des tokens.}
+
+Une probabilité mesure la plausibilité d'un événement dans une
+situation donnée. Pour conditionner sur un événement \(E\) de
+probabilité non nulle, on restreint l'univers aux cas où \(E\)
+se produit. La probabilité conditionnelle d'un événement \(A\)
+s'écrit \(P(A\mid E)\), que l'on lit « probabilité de \(A\)
+sachant \(E\) ».
+\[
+ P(A\mid E)=\frac{P(A\cap E)}{P(E)},
+ \qquad P(A\cap E)=P(E)P(A\mid E).
+\]
+Le symbole \(\cap\) signifie que les deux événements se produisent.
+La formule ne dit pas que \(A\) et \(E\) sont indépendants.
+L'indépendance serait le cas particulier où connaître \(E\)
+ne change pas la probabilité de \(A\).
+
+Imaginons vingt occurrences d'un préfixe dans un petit corpus.
+Douze sont suivies du caractère « a », cinq du caractère « e »
+et trois d'un espace. Les fréquences conditionnelles observées
+sont \(12/20=0{,}6\), \(5/20=0{,}25\) et
+\(3/20=0{,}15\). Elles totalisent un parce que ces trois
+issues couvrent ici toutes les observations après ce préfixe.
+
+\notion{Le contexte fait partie de la question.}
+Le modèle estime une distribution
+\(P_\theta(s_{t+1}=v\mid s_0,\ldots,s_t)\), où \(\theta\)
+désigne ses paramètres appris et \(v\) un identifiant candidat.
+Changer le préfixe change potentiellement toute la distribution.
+Les paramètres partagés permettent de construire des estimations
+même pour des préfixes jamais vus exactement.
+
+Dans \code{generate}, \code{idx\_cond} garde les derniers tokens
+autorisés par \code{context\_length}. Les logits de la dernière
+position servent à prévoir le prochain. Si le texte dépasse
+la capacité \(C\), ce sont les derniers \(C\) tokens, et non
+l'histoire entière, qui sont fournis au modèle sans cache.
+
+Une probabilité prédite n'est pas automatiquement une fréquence
+fiable dans le monde réel. Elle dépend du corpus, du modèle
+et de l'apprentissage. De même, conditionner sur un texte ne
+prouve aucune causalité entre événements du monde : il s'agit
+d'une relation de prédiction entre tokens.
+
+Pour chaque contexte fixé, les probabilités de tous les tokens
+possibles doivent totaliser un. On ne somme pas les probabilités
+d'un même token sur des contextes différents pour effectuer
+cette vérification.
+
+\exercice{Dans cent observations, quarante possèdent un préfixe
+\(E\), et dix de ces quarante sont suivies du token \(A\).
+Calculer \(P(E)\), \(P(A\cap E)\) et \(P(A\mid E)\) à partir
+des fréquences. Peut-on en déduire \(P(A)\) ?}
+\corrige{On obtient \(P(E)=0{,}4\), \(P(A\cap E)=0{,}1\),
+puis \(P(A\mid E)=0{,}1/0{,}4=0{,}25\).
+On ne connaît pas les occurrences de \(A\) parmi les soixante
+autres observations ; sa probabilité globale reste donc indéterminée.}
+
+\fiche{15}{Loi catégorielle et espérance}{\src{07_generate.py}{generate}}
+\objectif{Distinguer un tirage de token, le choix du maximum et une moyenne probabiliste.}
+
+Le prochain token appartient à un ensemble fini de \(V\) catégories.
+Une loi catégorielle lui attribue les probabilités
+\(p_0,\ldots,p_{V-1}\), toutes positives ou nulles, dont la somme
+vaut un. Une réalisation de cette loi est un seul identifiant ;
+ce n'est pas le vecteur des probabilités lui-même.
+
+Supposons trois tokens notés « a », « b » et espace, avec les
+probabilités \((0{,}5,0{,}3,0{,}2)\). On peut découper
+l'intervalle \([0,1[\) en trois morceaux de longueurs correspondantes.
+Un nombre uniforme tombant dans le premier morceau choisit « a »,
+dans le deuxième « b », et dans le troisième l'espace.
+C'est une façon intuitive de comprendre un tirage catégoriel.
+
+Dans \code{generate}, \code{torch.multinomial(probs, num\_samples=1)}
+réalise ce type de sélection pour chaque ligne. Malgré le nom
+de la fonction, avec un seul tirage par ligne on obtient ici
+un échantillon catégoriel. Au contraire, \code{torch.argmax}
+choisit systématiquement une catégorie de probabilité maximale.
+
+\notion{L'espérance concerne une quantité numérique associée au résultat.}
+Si chaque token \(v\) reçoit une valeur \(g(v)\), sa moyenne
+théorique sous la loi est :
+\[
+ \mathbb{E}[g(S)]=\sum_{v=0}^{V-1}p_vg(v).
+\]
+Pour \(g(\text{a})=1\), \(g(\text{b})=2\) et
+\(g(\text{espace})=0\), elle vaut
+\(0{,}5\times1+0{,}3\times2+0{,}2\times0=1{,}1\).
+Cette valeur n'est pas un token ; elle résume les résultats
+de nombreux tirages.
+
+Faire la moyenne brute des identifiants aurait rarement un sens
+linguistique : renuméroter le vocabulaire changerait cette moyenne
+sans changer le texte. En revanche, l'indicatrice d'un événement
+est utile : elle vaut un si l'événement arrive, zéro sinon.
+Son espérance est exactement la probabilité de l'événement.
+
+Sur \(n\) répétitions indépendantes avec la même distribution,
+le nombre attendu de « a » vaut \(0{,}5n\). Ce n'est pas
+une garantie de résultat exact. Pendant une génération réelle,
+la distribution change avec les nouveaux tokens ; on ne peut
+donc pas appliquer ce comptage comme si tout le texte provenait
+d'une unique loi fixe.
+
+\exercice{Avec les probabilités \((0{,}5,0{,}3,0{,}2)\),
+quelle est la probabilité d'obtenir deux fois « b » en deux
+tirages indépendants à contexte fixé ? Quel résultat donnerait
+le choix du maximum ?}
+\corrige{La probabilité vaut \(0{,}3\times0{,}3=0{,}09\).
+Le choix du maximum donnerait deux fois « a » sans tirage.
+Confondre ces méthodes éliminerait la diversité que le paramètre
+\code{sample} permet précisément de conserver.}
+
+\fiche{16}{Chaîne probabiliste autorégressive}{\src{07_generate.py}{generate}}
+\objectif{Construire la probabilité d'une continuation à partir de prédictions locales.}
+
+Une génération autorégressive produit les tokens un par un.
+Après chaque choix, le token obtenu devient une partie du contexte
+du choix suivant. Le préfixe s'allonge donc au cours du calcul.
+Cela ne signifie pas que les nouveaux tokens sont indépendants ;
+leur dépendance au passé constitue au contraire le principe du modèle.
+
+Pour un préfixe fixé \(c\) et une continuation de \(n\) tokens,
+la règle des probabilités conditionnelles donne :
+\[
+ P_\theta(s_1,\ldots,s_n\mid c)
+ =\prod_{t=1}^{n}P_\theta(s_t\mid c,s_1,\ldots,s_{t-1}).
+\]
+Le signe \(\prod\), lettre grecque pi majuscule, abrège une
+multiplication répétée. Il joue pour le produit le rôle du
+sigma pour la somme. Au premier facteur, aucun token nouveau
+n'a encore été produit : on conditionne seulement sur \(c\).
+
+Supposons que la continuation « a », puis « b » ait les
+probabilités successives \(0{,}6\) et \(0{,}25\).
+Sa probabilité vaut \(0{,}6\times0{,}25=0{,}15\).
+Le deuxième nombre doit être évalué après avoir ajouté « a ».
+Utiliser la probabilité de « b » avant cet ajout calculerait
+une autre quantité.
+
+\notion{Choix local et meilleure suite sont deux problèmes distincts.}
+Imaginons deux premiers choix : « a » reçoit \(0{,}6\),
+« b » reçoit \(0{,}4\). Après « a », le meilleur second
+choix ne reçoit que \(0{,}5\), tandis qu'après « b », un
+second choix reçoit \(0{,}9\). Le meilleur prolongement de
+la branche « a » vaut \(0{,}3\), celui de « b » vaut
+\(0{,}36\). Choisir le maximum à chaque étape peut donc
+manquer la continuation globalement la plus probable.
+
+Dans \code{generate}, \code{torch.cat([idx, next\_token], dim=1)}
+réalise l'ajout au préfixe. La boucle recalcule ensuite une
+prédiction. Le contexte effectif reste borné par \(C\).
+Le produit décrit toujours la loi de la procédure, mais ses
+facteurs utilisent alors les suffixes effectivement visibles.
+
+Pour identifier cette loi à celle des logits bruts du modèle,
+on considère une température égale à un, sans filtrage.
+Modifier la température ou supprimer des candidats modifie les
+probabilités utilisées par la procédure de génération.
+Ces options seront détaillées après les fondements mathématiques.
+
+\exercice{Trois probabilités conditionnelles d'une continuation
+valent \(1/2\), \(1/3\) et \(3/4\). Calculer sa probabilité
+et sa surprise totale.}
+\corrige{Le produit vaut
+\((1/2)(1/3)(3/4)=1/8\). Sa surprise vaut
+\(-\ln(1/8)=\ln8=3\ln2\approx2{,}0794\).
+Les facteurs dépendent de préfixes successifs différents ;
+leur multiplication n'exige aucune hypothèse d'indépendance.}
+
+\fiche{17}{Softmax : définition et invariance par translation}{\src{03_attention.py}{softmax_manual}}
+\objectif{Transformer des scores arbitraires en une distribution, puis démontrer une propriété utile.}
+
+Une liste de logits \(z=(z_0,\ldots,z_{V-1})\) peut contenir
+des valeurs négatives, positives ou supérieures à un. Pour obtenir
+une loi catégorielle, le softmax exponentie chaque score puis divise
+par la somme de toutes les exponentielles.
+\[
+ p_i=\frac{e^{z_i}}{\sum_{j=0}^{V-1}e^{z_j}},
+ \qquad 0\leq i<V.
+\]
+Pour des scores finis, chaque numérateur est strictement positif
+et le dénominateur l'est aussi. En additionnant les \(p_i\),
+on retrouve le dénominateur divisé par lui-même, donc un.
+La fonction est croissante dans l'ordre des scores :
+le plus grand logit reçoit la plus grande probabilité.
+
+\notion{Seules les différences entre scores comptent.}
+Ajoutons le même réel \(c\) à tous les logits. La propriété
+de l'exponentielle permet de factoriser \(e^c\) dans chaque
+terme du dénominateur :
+\[
+ \frac{e^{z_i+c}}{\sum_j e^{z_j+c}}
+ =\frac{e^c e^{z_i}}{e^c\sum_j e^{z_j}}
+ =p_i.
+\]
+Le facteur commun disparaît. Les scores \((1,2,3)\) et
+\((-2,-1,0)\) définissent donc exactement la même distribution.
+Soustraire le maximum, comme le fait \code{softmax\_manual},
+est un cas particulier avec \(c=-\max_j z_j\).
+
+Le rapport de deux probabilités vaut
+\(p_i/p_j=e^{z_i-z_j}\). Une différence de \(\ln2\)
+correspond donc à un rapport de probabilités égal à deux.
+Cela fournit une interprétation des écarts entre logits,
+mais pas de leur niveau absolu.
+
+Ne confondons pas addition et multiplication : multiplier tous
+les logits par deux double leurs écarts et change généralement
+la distribution. Cette distinction expliquera l'effet de la
+température en génération. De même, augmenter un seul logit
+n'est pas une translation commune : sa probabilité augmente
+et celles des autres candidats diminuent.
+
+Dans le dépôt, \code{dim=-1} précise l'axe de normalisation.
+Pour des logits \([B,T,V]\), le dernier axe est le vocabulaire.
+Dans les scores d'attention, il correspond aux positions consultées.
+La recette mathématique reste la même, mais les événements
+auxquels elle attribue des probabilités ne sont pas les mêmes.
+
+Le dénominateur commun couple les candidats : modifier un score
+change également la normalisation des autres. Le softmax n'applique
+donc pas une conversion indépendante à chaque case.
+
+\exercice{Les logits \((0,\ln2)\) donnent quelles probabilités ?
+Que deviennent-elles après ajout de 7, puis après multiplication
+des logits initiaux par deux ?}
+\corrige{Les exponentielles initiales valent \((1,2)\), donc
+les probabilités sont \((1/3,2/3)\). Ajouter 7 ne change rien.
+Multiplier les logits initiaux par deux donne les exponentielles
+\((1,4)\), donc \((1/5,4/5)\) : le choix déjà favorisé
+devient plus dominant.}
+
+\fiche{18}{Softmax chiffré : du tableau aux probabilités}{\src{07_generate.py}{generate}}
+\objectif{Effectuer un softmax exact, contrôler sa somme et interpréter une sélection.}
+
+Prenons un vocabulaire fictif de trois tokens d'identifiants
+0, 1 et 2. À la dernière position d'un préfixe, supposons
+les logits \(z=(0,\ln2,\ln4)\). Ce choix permet un calcul
+exact, car les exponentielles valent des entiers :
+\[
+ e^z=(1,2,4),\qquad
+ \sum_i e^{z_i}=7,\qquad
+ p=\left(\frac17,\frac27,\frac47\right).
+\]
+Les probabilités approchées sont
+\((0{,}142857,0{,}285714,0{,}571429)\).
+La somme exacte vaut un. Les valeurs décimales arrondies
+peuvent présenter un léger écart à un ; il faut distinguer
+cet effet d'affichage d'une erreur dans la normalisation.
+
+Refaisons le calcul stabilisé en soustrayant \(\ln4\),
+le plus grand logit. Les scores deviennent
+\((-\ln4,-\ln2,0)\), leurs exponentielles
+\((1/4,1/2,1)\), et leur somme \(7/4\).
+Diviser chaque terme par \(7/4\) redonne les mêmes
+fractions : \((1/4)/(7/4)=1/7\), puis \(2/7\) et \(4/7\).
+
+\notion{Une probabilité maximale n'est pas une certitude.}
+Le token 2 est le candidat le plus probable, mais sa probabilité
+reste seulement \(4/7\). Le tirage peut donc retourner 0 ou 1.
+Le choix par maximum retourne ici 2 sans hasard.
+Le softmax calcule une distribution ; il ne choisit pas lui-même
+le token suivant.
+
+Dans \code{generate}, \code{next\_token\_logits} est obtenu
+par \code{logits[:, -1, :]}. Si la forme initiale est
+\([1,5,3]\), cette sélection donne \([1,3]\) : une seule
+distribution sur trois candidats, celle qui suit les cinq tokens
+déjà fournis. Les distributions des autres positions ne sont
+pas additionnées à celle-ci.
+
+La variable \code{probs} résulte ensuite de \code{torch.softmax}.
+Pour retrouver exactement notre exemple, on suppose une température
+égale à un et aucun filtrage. Si l'on supprimait le troisième
+candidat avant normalisation, les deux probabilités restantes
+deviendraient \(1/3\) et \(2/3\), et non \(1/7\) et \(2/7\).
+Une distribution doit répartir toute la masse entre les possibilités
+encore autorisées.
+
+Pour contrôler un calcul, trois questions suffisent ici :
+les valeurs sont-elles non négatives, leur somme vaut-elle un,
+et le classement respecte-t-il celui des logits non masqués ?
+Ces contrôles ne remplacent pas le calcul exact.
+
+\exercice{Le même calcul est effectué sur les logits
+\((\ln3,\ln3,0)\). Donner les probabilités exactes, la somme
+des probabilités des deux premiers tokens et le résultat après
+soustraction du maximum.}
+\corrige{Les exponentielles valent \((3,3,1)\), de somme 7 :
+on obtient \((3/7,3/7,1/7)\). Les deux premiers tokens réunis
+ont la probabilité \(6/7\). Après soustraction de \(\ln3\),
+les exponentielles deviennent \((1,1,1/3)\), de somme \(7/3\).
+Le quotient final ne change pas ; les deux premiers candidats
+restent ex æquo.}
+
+\fiche{19}{Log-vraisemblance et entropie croisée}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Comprendre la quantité scalaire que l'apprentissage cherche à diminuer.}
+
+Une cible connue est un identifiant \(y\). Si le modèle lui
+attribue la probabilité \(p_y\), sa vraisemblance pour cette
+observation est \(p_y\). Maximiser cette valeur revient à
+maximiser \(\ln p_y\), car le logarithme est croissant.
+Pour formuler un problème de minimisation, on prend l'opposé :
+la perte vaut \(\ell=-\ln p_y\).
+\[
+ \ell=-z_y+\ln\!\left(\sum_{j=0}^{V-1}e^{z_j}\right),
+ \qquad
+ \mathcal{J}=\frac{1}{BT}\sum_{b=0}^{B-1}\sum_{t=0}^{T-1}
+ \ell_{b,t}.
+\]
+La première formule remplace \(p_y\) par son expression softmax.
+Elle montre qu'on peut calculer directement la perte à partir
+des logits. Le logarithme de la somme d'exponentielles se calcule
+de façon stable en retirant leur maximum avant exponentiation.
+
+\notion{Pourquoi parler d'entropie croisée ?}
+Représentons la cible par une distribution \(q\) qui vaut un
+pour le bon identifiant et zéro ailleurs. L'entropie croisée
+est \(-\sum_j q_j\ln p_j\). Tous les termes s'annulent
+sauf celui de la cible : on retrouve \(-\ln p_y\).
+On n'a pas besoin de fabriquer explicitement ce tableau de zéros
+et de un ; les cibles entières suffisent à PyTorch.
+
+Plus généralement, une distribution \(q\) peut répartir la
+masse entre plusieurs issues. Son entropie propre est
+\(-\sum_j q_j\ln q_j\), tandis que son entropie croisée avec
+la prédiction utilise \(\ln p_j\). Les deux expressions
+coïncident lorsque \(p=q\). Nous conservons ici les cibles
+entières effectivement utilisées dans le dépôt.
+
+Pour \(p=(1/7,2/7,4/7)\), une cible 2 entraîne
+\(\ell=\ln(7/4)\approx0{,}5596\). Une cible 0 entraîne
+\(\ell=\ln7\approx1{,}9459\). Le même tableau de scores
+est donc bon ou mauvais relativement à la réponse observée.
+
+Dans \code{MiniGPT.forward}, \code{F.cross\_entropy} reçoit
+les logits de forme \([BT,V]\) et les cibles de forme \([BT]\).
+Il ne faut pas appliquer un softmax au préalable : la fonction
+attend des scores bruts. La moyenne décrit les positions
+évaluées, qui ne sont pas nécessairement des observations indépendantes.
+
+Les cibles proviennent du texte lui-même, grâce au décalage
+d'une position. Il n'est donc pas nécessaire qu'une personne
+annote chaque prochain caractère. Cette construction explique
+le terme d'apprentissage auto-supervisé : le corpus fournit
+à la fois les entrées et les réponses attendues.
+
+\exercice{Deux cibles reçoivent les probabilités \(1/2\) et
+\(1/8\). Calculer la perte moyenne et la comparer à celle
+d'un prédicteur uniforme sur quatre tokens.}
+\corrige{La perte moyenne vaut
+\((\ln2+\ln8)/2=2\ln2=\ln4\approx1{,}3863\).
+Le prédicteur uniforme attribue \(1/4\) à chaque cible et
+obtient aussi \(\ln4\). Des erreurs individuelles différentes
+peuvent donc conduire à la même perte moyenne.}
+
+\fiche{20}{Dérivée : mesurer une variation locale}{\src{06_train.py}{train}}
+\objectif{Retrouver l'idée de pente et comprendre ce que signifie un signal d'amélioration.}
+
+Pour une fonction réelle \(f\), le quotient
+\((f(a+h)-f(a))/h\) mesure la variation moyenne entre
+deux entrées séparées par \(h\neq0\). Si ce quotient tend
+vers une valeur finie lorsque \(h\) tend vers zéro,
+cette limite est la dérivée \(f'(a)\).
+Elle représente la pente de la tangente au point d'abscisse \(a\).
+\[
+ f'(a)=\lim_{h\to0}\frac{f(a+h)-f(a)}{h},
+ \qquad f(a+h)\approx f(a)+hf'(a).
+\]
+La deuxième relation est une approximation locale, pas une
+égalité pour n'importe quel déplacement. Si \(f'(a)>0\),
+un petit déplacement positif augmente la fonction ; un petit
+déplacement négatif la diminue. Une dérivée négative inverse
+ces indications.
+
+\notion{Un calcul issu de la définition.}
+Pour \(f(x)=x^2\), développer \((a+h)^2\) donne
+\(a^2+2ah+h^2\). Le quotient de variation vaut donc
+\(2a+h\), et sa limite vaut \(2a\). Au point \(a=3\),
+la dérivée vaut 6. Un déplacement \(h=0{,}01\) prédit
+une hausse d'environ \(0{,}06\) ; la hausse exacte vaut
+\(3{,}01^2-9=0{,}0601\).
+
+Les règles utiles pour la suite sont :
+la dérivée d'une constante est zéro, celle de \(ax+b\)
+est \(a\), celle de \(e^x\) est \(e^x\), et celle
+de \(\ln x\), pour \(x>0\), est \(1/x\).
+La dérivée d'une somme est la somme des dérivées.
+Ces quelques règles couvrent une grande partie des opérations
+de nos petits exemples.
+
+Dans \code{train}, \code{loss.backward()} calcule des
+dérivées de la perte par rapport aux paramètres.
+Il ne remplace pas chaque poids par une infinité de petites
+perturbations : il utilise les règles de dérivation des opérations
+composées. Nous verrons ensuite comment cela se fait.
+
+Une pente nulle ne prouve pas qu'un point est un minimum.
+Pour \(f(x)=-x^2\), la dérivée en zéro est nulle,
+mais zéro est un maximum. L'information de premier ordre
+est locale et doit être interprétée avec prudence.
+
+On peut estimer une dérivée en comparant deux valeurs proches,
+mais choisir un écart minuscule n'est pas toujours plus fiable
+sur ordinateur. Les arrondis peuvent masquer la différence entre
+les deux résultats. La dérivation des opérations évite cette
+soustraction fragile et fournit directement les sensibilités
+des calculs effectivement composés.
+
+\exercice{Pour \(f(w)=(w-3)^2\), calculer \(f'(1)\).
+Prévoir l'effet d'un déplacement de \(1\) vers \(1{,}1\),
+puis comparer avec les valeurs exactes.}
+\corrige{On développe \(f(w)=w^2-6w+9\), donc
+\(f'(w)=2w-6\) et \(f'(1)=-4\).
+La variation prévue est \(0{,}1\times(-4)=-0{,}4\).
+La perte passe exactement de 4 à \(3{,}61\), soit
+une variation de \(-0{,}39\) : l'approximation indique
+correctement le sens de l'amélioration.}
+
+\fiche{21}{Règle de chaîne : dériver une composition}{\src{04_transformer.py}{FeedForward.forward}}
+\objectif{Propager une petite variation à travers plusieurs calculs successifs.}
+
+Une composition applique une fonction au résultat d'une autre.
+Si \(u=g(x)\) puis \(y=f(u)\), on écrit
+\(y=f(g(x))\). Une petite variation de \(x\) modifie
+d'abord \(u\), puis cette modification se répercute sur \(y\).
+La règle de chaîne multiplie ces deux sensibilités locales :
+\[
+ \frac{dy}{dx}=\frac{dy}{du}\frac{du}{dx},
+ \qquad (f\circ g)'(x)=f'(g(x))g'(x).
+\]
+La notation ressemble à une simplification de fractions,
+mais elle exprime une règle de dérivation. Le point auquel
+chaque dérivée est évaluée compte : \(f'\) s'évalue à
+la valeur intermédiaire \(g(x)\), pas automatiquement à \(x\).
+Cette règle suppose que les fonctions rencontrées soient dérivables
+aux points utilisés pendant le calcul.
+
+Considérons \(u=3x-1\), puis \(y=u^2\).
+On a \(du/dx=3\) et \(dy/du=2u\), donc
+\(dy/dx=6(3x-1)\). À \(x=2\), l'intermédiaire
+vaut 5 et la dérivée finale vaut 30.
+Développer \(y=9x^2-6x+1\) donne également
+\(18x-6=30\), ce qui vérifie le calcul par une autre voie.
+
+\notion{Les variables intermédiaires rendent les calculs lisibles.}
+Au lieu de dériver une expression immense, on conserve les
+résultats de chaque opération. Pour
+\(a=wx+b\), \(h=\phi(a)\), \(z=vh+c\), la sensibilité
+de \(z\) à \(w\), les autres valeurs étant fixées, est
+\(v\phi'(a)x\). On retrouve les facteurs du trajet
+\(w\rightarrow a\rightarrow h\rightarrow z\).
+
+\code{FeedForward.forward} applique une séquence :
+couche affine, GELU, couche affine, puis dropout.
+Les fonctions réellement utilisées ont leurs règles de dérivation.
+Notre carré \(u^2\) est seulement un exemple facile à calculer,
+pas la définition de GELU.
+
+Si plusieurs trajets relient une variable à la sortie,
+leurs contributions s'ajoutent. Pour \(y=x^2+x\),
+la branche carrée apporte \(2x\) et la branche directe
+apporte 1. La dérivée totale est \(2x+1\).
+Cette idée éclairera plus tard les additions résiduelles
+du Transformer.
+
+La variable par rapport à laquelle on dérive doit toujours
+être annoncée. Dans \(a=wx+b\), dériver par rapport à
+\(x\) donne \(w\), tandis que dériver par rapport à
+\(w\) donne \(x\). Le biais est constant dans ces deux
+calculs, mais sa dérivée vaut un lorsqu'on dérive par rapport
+à \(b\). Une même expression possède donc plusieurs sensibilités,
+selon la question posée.
+
+Des produits répétés de petites sensibilités peuvent atténuer
+fortement une variation ; de grandes sensibilités peuvent
+l'amplifier. Ce constat arithmétique prépare l'étude des
+réseaux profonds, sans remplacer l'analyse de leurs valeurs réelles.
+
+\exercice{Dériver \(f(x)=\ln(1+e^x)\) en nommant ses
+intermédiaires. Quelle est la dérivée en zéro ?}
+\corrige{Posons \(u=e^x\), \(v=1+u\), puis \(f=\ln v\).
+Les sensibilités sont \(du/dx=e^x\), \(dv/du=1\) et
+\(df/dv=1/v\). Leur produit vaut
+\(f'(x)=e^x/(1+e^x)\). En zéro, \(e^0=1\),
+donc \(f'(0)=1/2\).}
+
+\fiche{22}{Gradient : une dérivée pour chaque paramètre}{\src{06_train.py}{train}}
+\objectif{Étendre la pente d'une courbe à une perte dépendant de plusieurs nombres.}
+
+Un réseau possède de nombreux paramètres, regroupés symboliquement
+dans \(\theta=(\theta_0,\ldots,\theta_{n-1})\).
+Sa perte \(\mathcal{J}(\theta)\) reste un seul nombre.
+La dérivée partielle
+\(\partial\mathcal{J}/\partial\theta_i\) mesure l'effet local
+du paramètre \(i\) lorsque les autres sont maintenus fixes.
+Le symbole \(\partial\) rappelle cette convention.
+
+Le gradient rassemble toutes ces dérivées dans le même ordre
+que les paramètres. Il indique comment une petite modification
+simultanée se répercute au premier ordre :
+\[
+ \nabla\mathcal{J}=
+ \left(\frac{\partial\mathcal{J}}{\partial\theta_0},
+ \ldots,\frac{\partial\mathcal{J}}{\partial\theta_{n-1}}\right),
+ \qquad
+ \Delta\mathcal{J}\approx\nabla\mathcal{J}\cdot\Delta\theta.
+\]
+Nous retrouvons le produit scalaire : chaque variation est
+pondérée par sa sensibilité, puis toutes les contributions
+s'additionnent.
+
+Pour \(\mathcal{J}(a,b)=(a+2b-3)^2\), la règle de chaîne
+donne les dérivées \(2(a+2b-3)\) et \(4(a+2b-3)\).
+Au point \((0,0)\), le gradient est \((-6,-12)\).
+Une perturbation \((0{,}01,0)\) prévoit une baisse de
+\(0{,}06\) ; la perturbation \((0,0{,}01)\) prévoit
+une baisse de \(0{,}12\). Les deux paramètres n'ont pas
+la même influence locale.
+
+\notion{Le gradient des logits possède une forme particulièrement simple.}
+Pour la perte d'une cible \(y\) étudiée précédemment,
+la dérivation du logarithme de la somme donne :
+\[
+ \frac{\partial\ell}{\partial z_i}
+ =p_i-\mathbf{1}_{i=y}.
+\]
+L'indicatrice \(\mathbf{1}_{i=y}\) vaut un pour la cible,
+zéro sinon. Le terme \(p_i\) vient de
+\(e^{z_i}/\sum_j e^{z_j}\), et la dérivée de \(-z_y\)
+fournit le terme négatif. Augmenter le logit correct diminue
+ainsi localement la perte, tandis qu'augmenter un concurrent
+l'augmente.
+
+Dans \code{train}, \code{loss.backward()} propage ces
+sensibilités jusqu'aux paramètres. Leur attribut \code{grad}
+possède leur forme : une matrice de poids reçoit une matrice
+de dérivées. Pour une perte moyenne sur plusieurs positions,
+les contributions sont additionnées puis divisées par leur nombre.
+Les identifiants entiers ne sont pas les paramètres à ajuster.
+
+Un poids partagé intervient à plusieurs positions. Sa dérivée
+totale additionne les contributions de toutes ces utilisations :
+on n'apprend pas une copie indépendante du poids pour chaque
+token. Cette accumulation explique aussi pourquoi les anciennes
+valeurs de \code{grad} doivent être effacées lorsqu'on commence
+une nouvelle mise à jour sans accumulation volontaire.
+
+\exercice{Avec \(p=(0{,}2,0{,}5,0{,}3)\) et une cible
+d'identifiant 2, calculer le gradient par rapport aux logits,
+puis la somme de ses coordonnées.}
+\corrige{Le gradient vaut \((0{,}2,0{,}5,-0{,}7)\),
+de somme zéro. Une translation commune de tous les logits
+a donc une variation de perte nulle au premier ordre.
+Cela concorde avec l'invariance exacte du softmax démontrée
+précédemment.}
+
+\fiche{23}{Rétropropagation : un petit réseau calculé entièrement}{\src{06_train.py}{train}}
+\objectif{Effectuer un passage avant et un passage arrière sans traiter la dérivation automatique comme une magie.}
+
+Construisons un réseau scalaire pédagogique. Son entrée est \(x\),
+ses paramètres sont \(w,b,v,c\), et ses deux logits sont
+\((z,0)\). La cible est le premier token, d'identifiant zéro.
+La fonction carrée remplace volontairement GELU pour permettre
+un calcul intégral à la main ; l'entropie croisée reste celle
+étudiée pour le modèle.
+\[
+ a=wx+b,\qquad h=a^2,\qquad z=vh+c,\qquad
+ \ell=\ln(1+e^{-z}).
+\]
+La dernière formule vient de
+\(-\ln(e^z/(e^z+1))\). Le logit du deuxième token reste
+fixé à zéro : ce n'est pas un paramètre supplémentaire.
+Nous choisissons \(x=2,w=1,b=-1,v=2,c=-2\).
+
+\notion{Passage avant : mémoriser les intermédiaires.}
+On calcule successivement \(a=1\times2-1=1\),
+\(h=1^2=1\), puis \(z=2\times1-2=0\).
+Les deux logits sont donc nuls, les probabilités valent
+\((1/2,1/2)\) et la perte vaut \(\ln2\approx0{,}6931\).
+Ces valeurs intermédiaires serviront dans les dérivées.
+
+Le passage arrière commence à la perte.
+La dérivée par rapport à \(z\) vaut
+\(-1/(1+e^z)\), donc \(-1/2\) ici.
+Pour l'opération \(z=vh+c\), on multiplie ce signal par
+la dérivée locale correspondant à chaque entrée :
+\(\partial\ell/\partial v=(-1/2)h=-1/2\),
+\(\partial\ell/\partial c=-1/2\), et
+\(\partial\ell/\partial h=(-1/2)v=-1\).
+
+À travers le carré, on obtient
+\(\partial\ell/\partial a=(-1)\times2a=-2\).
+La première couche affine reçoit alors ce signal :
+\[
+ \frac{\partial\ell}{\partial w}=-2x=-4,\qquad
+ \frac{\partial\ell}{\partial b}=-2,\qquad
+ \frac{\partial\ell}{\partial x}=-2w=-2.
+\]
+Le gradient des quatre paramètres, dans l'ordre \((w,b,v,c)\),
+est donc \((-4,-2,-1/2,-1/2)\).
+La dérivée de l'entrée a été calculée pour suivre toute la chaîne,
+mais l'entrée observée ne doit pas être modifiée pour apprendre
+les paramètres.
+
+Dans \code{train}, \code{loss.backward()} automatise ce
+parcours inverse pour le vrai graphe du MiniGPT.
+Chaque opération transmet une sensibilité locale ; les chemins
+partagés additionnent leurs contributions. Le passage arrière
+ne change pas encore les paramètres : cette responsabilité
+appartient à l'optimiseur.
+
+La valeur initiale du signal arrière est un :
+la dérivée de la perte par rapport à elle-même vaut un.
+Chaque étape conserve ensuite les paramètres aux valeurs utilisées
+pendant le passage avant. Si l'on changeait un poids au milieu
+de ce parcours, les dérivées locales ne décriraient plus toutes
+le même réseau et le gradient obtenu perdrait sa cohérence.
+
+\exercice{En ne changeant que \(c\), appliquer un déplacement
+opposé au gradient de taille \(0{,}1\) fois sa valeur.
+Recalculer le logit et la perte.}
+\corrige{Le nouveau biais vaut
+\(-2-0{,}1(-1/2)=-1{,}95\). Le logit devient
+\(z=2-1{,}95=0{,}05\). La perte vaut
+\(\ln(1+e^{-0{,}05})\approx0{,}6685\), inférieure à
+\(\ln2\), conformément au signe du gradient.}
+
+\fiche{24}{Descente de gradient et synthèse des fondements}{\src{06_train.py}{train}}
+\objectif{Relier la prédiction, la perte et les dérivées à une règle élémentaire d'apprentissage.}
+
+Une fois le gradient connu, comment modifier les paramètres ?
+La descente de gradient élémentaire avance dans la direction
+opposée au gradient. Le taux d'apprentissage \(\eta>0\)
+règle la taille du déplacement :
+\[
+ \theta_{\mathrm{nouveau}}
+ =\theta_{\mathrm{ancien}}-\eta\nabla\mathcal{J}
+   (\theta_{\mathrm{ancien}}).
+\]
+Tous les composants utilisent les dérivées évaluées aux anciennes
+valeurs. Les remplacer successivement en recalculant une partie
+du gradient définirait une autre procédure.
+Un paramètre dont la dérivée est négative augmente ; soustraire
+un nombre négatif revient à l'ajouter.
+
+\notion{Pourquoi cette direction peut-elle améliorer la perte ?}
+L'approximation locale donne, pour le déplacement
+\(\Delta\theta=-\eta\nabla\mathcal{J}\),
+une variation d'environ
+\(-\eta\|\nabla\mathcal{J}\|^2\).
+Elle est négative si le gradient est non nul.
+Le raisonnement reste local : un pas trop grand peut sortir
+de la région où cette approximation est pertinente.
+
+Sur \(\mathcal{J}(w)=(w-3)^2\), partons de \(w=1\).
+Le gradient vaut \(-4\). Avec \(\eta=0{,}1\), on obtient
+\(w_{\mathrm{nouveau}}=1{,}4\) et une perte \(2{,}56\),
+contre 4 auparavant. Avec \(\eta=1{,}5\), on obtient 7
+et une perte 16 : suivre la bonne direction initiale
+n'empêche pas de dépasser une région favorable.
+
+Dans \code{train}, le programme emploie
+\code{torch.optim.AdamW}, non cette descente élémentaire.
+AdamW adapte ses mises à jour à l'historique des gradients
+et applique une décroissance des poids. La formule précédente
+explique l'intuition, mais ne reproduit pas ses étapes exactes.
+Les détails de l'entraînement seront développés dans les
+fiches 73 à 96.
+
+L'ordre effectif du code est important :
+le passage avant calcule les logits et la perte,
+\code{optimizer.zero\_grad(set\_to\_none=True)} efface
+les anciennes dérivées, \code{loss.backward()} calcule
+les nouvelles, puis \code{optimizer.step()} modifie
+les paramètres. Le calcul des gradients et leur application
+constituent deux opérations distinctes.
+
+Nous disposons désormais de la chaîne mathématique essentielle :
+les indices désignent les données ; les vecteurs et matrices
+les représentent ; les fonctions composées donnent des logits ;
+le softmax fournit des probabilités ; l'entropie croisée
+mesure leur accord avec les cibles ; les dérivées indiquent
+comment modifier les paramètres. Les fiches suivantes pourront
+donc préciser les données et les représentations avant
+l'attention, réservée aux fiches 49 à 72.
+
+\exercice{Une perte a pour gradient \((2,-3)\) au point
+\((1,1)\). Avec \(\eta=0{,}05\), calculer le nouveau point
+et la variation de perte prédite au premier ordre.}
+\corrige{Le déplacement vaut \((-0{,}1,0{,}15)\), donc
+le nouveau point est \((0{,}9,1{,}15)\).
+La variation prévue est
+\(2(-0{,}1)+(-3)(0{,}15)=-0{,}65\).
+C'est une prévision locale, pas une garantie que la perte
+réelle diminue exactement de cette quantité.}

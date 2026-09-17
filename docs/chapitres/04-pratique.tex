@@ -1,0 +1,1281 @@
+\fiche{73}{Choisir une configuration sans deviner les défauts}{\src{06_train.py}{MODEL_PRESETS, train, main}}
+\objectif{Construire une configuration effective en distinguant le préréglage, les options explicites et les valeurs du constructeur. Cette lecture évite de comparer deux expériences qui ne diffèrent pas seulement par le paramètre annoncé.}
+
+Le script propose trois préréglages. Dans l'ordre contexte, dimension, têtes, couches et largeur du réseau intermédiaire, leurs valeurs sont :
+\[
+ (C,D,H,L,F)=
+ \begin{cases}
+ (32,64,4,2,256)&\text{tiny},\\
+ (128,128,4,4,512)&\text{small},\\
+ (256,256,8,6,1024)&\text{medium}.
+ \end{cases}
+\]
+Le vocabulaire $V$ provient du tokenizer effectivement appris, et non de cette
+table. En particulier, demander une taille de vocabulaire ne transforme pas le
+tokenizer caractère en tokenizer BPE.
+
+\notion{La fonction \code{train} copie le préréglage, ajoute ses défauts généraux,
+puis remplace uniquement les options dont la valeur n'est pas \code{None}.
+Une option omise en ligne de commande ne doit donc pas effacer la valeur du
+préréglage. Les noms inconnus transmis directement à la fonction sont refusés.}
+
+Sans argument, l'entraînement utilise \code{tiny}, cinq époques, $B=8$, un
+taux d'apprentissage de $0{,}0003$, un dropout de $0{,}1$, un pas de fenêtres
+de un et la graine 42. Les positions sont apprises, l'attention est manuelle,
+la précision est \code{float32}. Le périphérique est CUDA si disponible,
+sinon CPU : préciser CPU rend le choix explicite.
+
+Le constructeur \code{MiniGPT}, dans le script du modèle, possède d'autres
+défauts : $D=128$ et $F=512$, tandis que $C$ est obligatoire. L'entraînement
+lui transmet sa configuration ; il n'hérite donc pas accidentellement de ces
+deux dimensions. De même, la CLI de génération demande vingt nouveaux tokens
+par défaut, contre quarante pour l'appel direct à \code{generate}.
+La taille du batch n'appartient pas au constructeur du réseau : elle règle
+le regroupement des fenêtres par le chargeur de données.
+
+\exercice{On choisit \code{small}, puis on impose $D=96$, $H=6$ et RoPE.
+Déterminer les dimensions conservées, la dimension d'une tête et la validité
+de ce choix. Expliquer pourquoi remplacer ensuite $H$ par cinq échoue.}
+
+\corrige{Les options explicites donnent $(C,D,H,L,F)=(128,96,6,4,512)$.
+La dimension d'une tête vaut $d_k=96/6=16$ : elle est entière et paire,
+donc compatible avec RoPE. Avec cinq têtes, $96/5$ n'est pas entier ;
+le constructeur refuse cette répartition avant tout apprentissage.
+Le préréglage ne réajuste automatiquement ni $D$ ni $F$.}
+
+\attention{Noter la configuration finale, pas seulement le nom du préréglage.
+Une grande largeur augmente les besoins matériels sans garantir une meilleure
+validation. Un contexte agrandi exige aussi des portions de corpus assez longues ;
+changer uniquement le modèle peut donc rendre les données inutilisables.}
+
+\fiche{74}{Passer des logits à la perte du lot}{\src{06_train.py}{train : CrossEntropyLoss et reshape}}
+\objectif{Suivre exactement les prédictions et les étiquettes jusqu'au scalaire
+utilisé pour apprendre. Le passage des tenseurs à une moyenne ne doit perdre
+ni l'ordre des positions ni la correspondance entre chaque position et sa cible.}
+
+Le dataset fournit deux tenseurs d'entiers, chacun de forme $[B,T]$.
+L'entrée contient les tokens observés ; la cible contient les tokens suivants.
+Le décalage a déjà été construit dans les données. Le modèle produit ensuite
+des logits de forme $[B,T,V]$ : pour chaque fenêtre et chaque position,
+une ligne de $V$ scores propose le token suivant.
+
+\notion{\code{CrossEntropyLoss} reçoit des scores bruts et des indices de
+classes. Le script transforme donc les logits en $[BT,V]$ avec
+\code{reshape(-1, logits.size(-1))}, et les cibles en $[BT]$ avec
+\code{reshape(-1)}. Le symbole Python \code{-1} demande de déduire la dimension
+manquante, sans modifier le nombre d'éléments.}
+
+En numérotant les $N=BT$ positions par $i$, la perte est
+\[
+ \mathcal L=\frac1N\sum_{i=1}^{N}
+ \left(\log\sum_{j=0}^{V-1}e^{z_{ij}}-z_{i,y_i}\right).
+\]
+Cette formule combine normalisation et logarithme. Appliquer auparavant un
+softmax ne serait pas une simple présentation différente : ses probabilités
+seraient prises pour de nouveaux logits. On optimiserait alors une autre
+expression, avec des scores artificiellement comprimés.
+
+L'aplatissement rapproche les dimensions batch et temps, pas temps et
+vocabulaire. Pour $B=2$, $T=3$, $V=5$, trente scores deviennent six lignes de
+cinq scores, accompagnées de six étiquettes. Il ne faut ni refaire le décalage
+des cibles ni les remplacer par les prédictions du réseau.
+Chaque étiquette reste un indice entier du vocabulaire, et non un vecteur
+de probabilités construit à la main.
+
+\exercice{Deux positions ont respectivement les logits $(\log 3,0)$ et
+$(0,\log 3)$ ; les deux cibles valent zéro. Calculer les probabilités utiles,
+les pertes individuelles et leur moyenne. Que montre cet exemple sur une
+prédiction très assurée mais incorrecte ?}
+
+\corrige{Les probabilités de la cible sont $3/4$ puis $1/4$. Les pertes valent
+$-\log(3/4)\simeq0{,}288$ et $-\log(1/4)\simeq1{,}386$.
+La moyenne est $\log(4/\sqrt3)\simeq0{,}837$ nat par cible.
+La seconde position pénalise davantage le modèle, même si ses scores sont
+aussi contrastés que ceux de la première. Ces nombres sont un calcul
+didactique, pas une mesure issue du corpus.}
+
+\attention{Le second objet renvoyé par \code{model(x)} est ici inutilisé :
+sans cibles transmises au modèle, sa perte interne vaut \code{None}.
+L'entraînement calcule explicitement sa propre perte, selon la même convention.
+Les tokens inconnus restent des cibles ordinaires ; aucun masque de padding
+supplémentaire n'est fourni dans cette boucle.}
+
+\fiche{75}{Respecter l'ordre réel de la rétropropagation}{\src{06_train.py}{train : zero_grad, backward, step}}
+\objectif{Relier le gradient étudié en mathématiques aux trois opérations qui
+changent effectivement les poids. Une itération correcte exige de distinguer
+le calcul de la perte, l'accumulation des gradients et la modification des paramètres.}
+
+PyTorch construit un graphe de calcul pendant le passage avant. Les tenseurs
+intermédiaires permettent de retrouver comment chaque paramètre a contribué
+à la perte. Appeler \code{loss.backward()} parcourt les dépendances en sens
+inverse et inscrit les dérivées dans les attributs \code{grad} des paramètres.
+Cette opération ne constitue pas encore une mise à jour des poids.
+
+\notion{Dans la boucle réelle, l'ordre est : passage avant, calcul de la perte,
+\code{optimizer.zero\_grad(set\_to\_none=True)}, \code{loss.backward()},
+puis \code{optimizer.step()}. Le petit schéma introductif du fichier ne doit
+pas remplacer la lecture des instructions exécutées.}
+
+Effacer les anciens gradients après le passage avant est correct ici :
+ce passage n'a pas besoin des attributs \code{grad}. En revanche, les effacer
+entre \code{backward} et \code{step} priverait l'optimiseur des dérivées fraîchement
+calculées. L'option \code{set\_to\_none=True} retire les gradients stockés au lieu
+de remplir systématiquement leurs tenseurs de zéros.
+
+Pour comprendre le risque d'accumulation, considérons deux pertes successives :
+\[
+ g^{(1)}=\nabla_\theta\mathcal L_1,\qquad
+ \text{sans remise à zéro : }\ \theta.\mathrm{grad}
+     =g^{(1)}+g^{(2)}.
+\]
+L'accumulation peut être intentionnelle dans d'autres programmes. Ce script,
+lui, veut une mise à jour par lot et remet donc les gradients à zéro à chaque
+itération. Il ne réalise pas une accumulation contrôlée sur plusieurs micro-lots.
+
+La valeur affichée par \code{loss.item()} correspond au calcul effectué avant
+la mise à jour. Elle devient un nombre Python pour les statistiques ; ce nombre
+ne conserve pas le graphe nécessaire à la rétropropagation. On ne remplace
+donc jamais \code{loss.backward()} par un appel sur cette valeur détachée.
+
+\exercice{Pour une illustration en descente simple, prendre
+$\mathcal L(\theta)=(\theta-3)^2$, $\theta=1$ et $\eta=0{,}1$.
+Calculer une mise à jour, puis expliquer les effets d'une remise à zéro
+effectuée au mauvais endroit.}
+
+\corrige{La dérivée vaut $2(\theta-3)=-4$. Une descente simple donnerait
+$\theta'=1-0{,}1(-4)=1{,}4$, donc un déplacement vers trois.
+Effacer le gradient juste avant la mise à jour supprime cette information.
+Ne jamais l'effacer additionne au contraire des dérivées calculées pour
+différents lots et différents poids. Le calcul numérique illustre le principe ;
+l'optimiseur réellement employé est AdamW, dont le déplacement diffère.}
+
+\attention{La construction du graphe dépend de l'enregistrement des gradients,
+pas uniquement du mode entraînement. Une perte obtenue entièrement sous
+\code{no\_grad} ne peut pas entraîner normalement le modèle par rétropropagation.}
+
+\fiche{76}{Comprendre les deux mémoires d'Adam}{\src{06_train.py}{train : construction de AdamW}}
+\objectif{Expliquer pourquoi Adam adapte les déplacements sans prétendre que
+le script utilise une simple descente de gradient. Les deux moments se comprennent
+comme des moyennes pondérées des dérivées et de leurs carrés.}
+
+Dans une descente stochastique élémentaire, un paramètre suit
+$\theta_{t+1}=\theta_t-\eta g_t$. Deux coordonnées ayant des gradients de tailles
+très différentes reçoivent alors des déplacements très différents. Adam garde
+un historique pour lisser les changements et ajuster l'échelle de chaque
+coordonnée. Les opérations suivantes se lisent séparément pour chaque nombre
+du modèle, même si PyTorch les applique à des tenseurs entiers.
+
+\notion{Le premier moment mémorise une direction moyenne. Le second mémorise
+une moyenne de carrés, donc une échelle toujours positive. Ce second moment
+n'est pas directement la variance : on n'y soustrait pas le carré de la moyenne.}
+\[
+ m_t=\beta_1m_{t-1}+(1-\beta_1)g_t,\qquad
+ v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2.
+\]
+Les coefficients compris entre zéro et un donnent davantage de poids au passé
+lorsqu'ils sont proches de un. Comme les mémoires commencent à zéro, Adam
+corrige leur biais initial :
+\[
+ \widehat m_t=\frac{m_t}{1-\beta_1^t},\quad
+ \widehat v_t=\frac{v_t}{1-\beta_2^t},\quad
+ \Delta\theta_t=-\eta\frac{\widehat m_t}
+                              {\sqrt{\widehat v_t}+\varepsilon}.
+\]
+Le petit $\varepsilon$ évite une division par zéro et influence les très petites
+échelles. Le quotient ne signifie pas que toutes les coordonnées bougent
+toujours autant ; il dépend de leurs historiques respectifs.
+
+Le dépôt appelle AdamW, qui reprend ces moments et ajoute une décroissance
+découplée des poids, étudiée ensuite. Les valeurs $\beta_1=0{,}9$ et
+$\beta_2=0{,}999$ sont des défauts usuels de PyTorch, non des arguments écrits
+dans cet appel. Pour une expérience strictement documentée, consulter aussi
+la version installée de la bibliothèque.
+Les carrés empêchent notamment des gradients positifs et négatifs de
+s'annuler dans la mémoire d'échelle, même lorsqu'ils s'annulent partiellement
+dans la mémoire de direction.
+
+\exercice{Avec ces coefficients, des mémoires initiales nulles et un premier
+gradient $g_1=2$, calculer $m_1$, $v_1$, puis les moments corrigés.
+Comparer le déplacement Adam, en négligeant $\varepsilon$, à celui d'une
+descente simple lorsque $\eta=0{,}01$.}
+
+\corrige{On obtient $m_1=0{,}2$ et $v_1=0{,}004$.
+Les divisions par $0{,}1$ et $0{,}001$ donnent
+$\widehat m_1=2$ et $\widehat v_1=4$. Le quotient vaut un :
+Adam déplace donc le paramètre de $-0{,}01$, contre $-0{,}02$ pour la descente
+simple. La correction du biais est essentielle à cette comparaison.}
+
+\attention{Cet exemple isole les moments : il omet volontairement la décroissance
+AdamW. Adapter automatiquement une échelle ne garantit ni convergence globale
+ni absence de divergence ; le taux d'apprentissage reste un choix expérimental
+important et doit être jugé avec la validation.}
+
+\fiche{77}{Lire AdamW sans lui ajouter des mécanismes absents}{\src{06_train.py}{train : optimizer et learning_rate}}
+\objectif{Identifier ce que l'optimiseur fait réellement et ce que la boucle
+ne fait pas. La décroissance des poids constitue un choix distinct du taux
+d'apprentissage et de l'adaptation par les moments.}
+
+L'appel réel transmet tous les paramètres du modèle à
+\code{torch.optim.AdamW}, avec seulement \code{lr=config['learning\_rate']}
+comme réglage explicite. Aucun groupe particulier n'exclut les biais ou les
+paramètres de normalisation. Les embeddings de tokens et la tête de sortie
+sont également deux ensembles de poids distincts : le modèle ne les lie pas.
+
+\notion{AdamW réduit directement les poids, indépendamment du gradient utilisé
+pour alimenter les moments. Avec une décroissance $\lambda$, la représentation
+usuelle de la mise à jour d'une coordonnée est}
+\[
+ \theta_{t+1}=(1-\eta\lambda)\theta_t
+       -\eta\frac{\widehat m_t}{\sqrt{\widehat v_t}+\varepsilon}.
+\]
+Le premier terme rapproche les poids de zéro ; le second utilise l'information
+de la perte. Ajouter simplement $\lambda\theta$ au gradient avant Adam
+modifierait aussi ses mémoires et ne décrirait pas cette décroissance découplée.
+La distinction importe précisément parce que l'échelle d'Adam dépend des
+gradients antérieurs.
+
+Dans les versions usuelles de PyTorch, AdamW prend par défaut une décroissance
+de $0{,}01$, des coefficients $(0{,}9,0{,}999)$ et
+$\varepsilon=10^{-8}$. Ces valeurs appartiennent à la bibliothèque, pas à une
+configuration explicitement figée par le dépôt. Une archive d'expérience
+sérieuse doit donc noter la version de PyTorch et vérifier ses défauts.
+
+Le taux d'apprentissage est constant dans cette boucle : aucun ordonnanceur,
+échauffement progressif ou décroissance cosinusoïdale n'est instancié. Le code
+ne limite pas non plus la norme des gradients. Une ligne affichant toujours
+le même taux n'est donc pas une panne d'un ordonnanceur caché ; elle correspond
+au fonctionnement prévu.
+
+\exercice{Prendre, uniquement pour le calcul, $\theta=2$, $\eta=0{,}001$,
+$\lambda=0{,}01$ et un quotient adaptatif égal à $0{,}5$.
+Séparer la contribution de la décroissance et celle du gradient.
+Que reste-t-il si ce quotient est nul mais qu'un gradient nul existe ?}
+
+\corrige{La décroissance retire
+$0{,}001\times0{,}01\times2=0{,}00002$.
+Le déplacement adaptatif retire $0{,}001\times0{,}5=0{,}0005$.
+Le nouveau poids vaut donc $1{,}99948$. Si le quotient est nul, le poids devient
+$1{,}99998$ par la seule décroissance. Un gradient absent, égal à \code{None},
+doit être distingué d'un gradient numériquement nul : AdamW peut ignorer
+entièrement les paramètres sans gradient.}
+
+\attention{Ne pas annoncer de clipping, de scheduler ou de règles spéciales
+pour les normalisations dans un compte rendu de ce dépôt. Ces mécanismes
+peuvent être utiles ailleurs, mais leur présence doit être démontrée par
+un appel effectif, pas supposée à partir du nom d'un optimiseur moderne.}
+
+\fiche{78}{Séparer dropout, mode et enregistrement des gradients}{\src{06_train.py}{train, evaluate ; 07_generate.py : generate}}
+\objectif{Distinguer trois décisions souvent confondues : activer le comportement
+d'entraînement, tirer des masques de dropout et enregistrer les opérations pour
+la rétropropagation. Chaque décision possède une commande différente.}
+
+Le dropout désactive aléatoirement certaines composantes pendant l'entraînement.
+Pour une composante $x$ et une probabilité de suppression $p$, PyTorch utilise
+le principe du dropout inversé :
+\[
+ \widetilde x=\frac{M}{1-p}x,\qquad
+ \mathbb P(M=1)=1-p,\qquad
+ \mathbb E[\widetilde x]=x.
+\]
+Le facteur compensateur préserve l'espérance, pas chaque réalisation. Avec
+$p=0{,}1$, une composante conservée est multipliée par $1/0{,}9$ ; elle peut
+aussi devenir nulle. Deux passages avant successifs peuvent donc différer
+alors que les poids n'ont pas changé.
+
+\notion{\code{model.train()} active récursivement le mode entraînement.
+\code{model.eval()} désactive notamment le dropout, sans bloquer les gradients.
+\code{torch.no\_grad()} empêche l'enregistrement du graphe, mais ne change
+pas à lui seul le comportement des couches de dropout.}
+
+Un modèle neuf est en mode entraînement. La boucle conserve ce mode, et
+\code{evaluate} le restaure après sa mesure. La fonction \code{generate},
+elle, impose le mode évaluation et porte le décorateur \code{no\_grad}.
+Ces deux actions complémentaires rendent la génération moins coûteuse en
+mémoire et désactivent les perturbations destinées à l'apprentissage.
+
+Un détail révélateur apparaît avant les époques : le script affiche les formes
+avec un passage placé sous \code{no\_grad}, mais sans appeler \code{eval}.
+Ce passage ne construit pas de graphe ; son dropout peut pourtant rester
+actif et consommer des tirages aléatoires. Déduire le mode à partir de la
+seule présence de ce contexte serait donc incorrect.
+
+\exercice{Une activation vaut six et $p=0{,}25$. Donner ses deux valeurs
+possibles en entraînement, leurs probabilités et son espérance.
+Indiquer ensuite le résultat en évaluation et expliquer si une dérivée reste
+calculable dans ce dernier mode.}
+
+\corrige{L'activation vaut zéro avec probabilité $0{,}25$, ou
+$6/0{,}75=8$ avec probabilité $0{,}75$. Son espérance est
+$0{,}25\times0+0{,}75\times8=6$. En évaluation, le dropout la laisse égale
+à six. Une dérivée reste calculable si les tenseurs concernés demandent
+des gradients et si leur enregistrement n'a pas été désactivé ; \code{eval}
+ne remplace pas \code{no\_grad}.}
+
+\attention{La génération gloutonne supprime le tirage du prochain token,
+mais \code{eval} seul ne rend pas un échantillonnage multinomial déterministe.
+Inversement, \code{no\_grad} seul ne suffit pas pour le cache KV : le modèle
+exige explicitement le mode évaluation et l'absence de cibles.}
+
+\fiche{79}{Évaluer une moyenne réellement pondérée par token}{\src{06_train.py}{evaluate}}
+\objectif{Reconstituer la valeur de validation à partir des lots sans favoriser
+le dernier lot, souvent plus petit. Comprendre aussi pourquoi une fonction
+d'évaluation doit respecter le mode dans lequel son appelant utilisait le modèle.}
+
+\code{evaluate} repère d'abord le périphérique des paramètres, mémorise
+\code{model.training} dans \code{was\_training}, puis appelle \code{model.eval()}.
+Son décorateur \code{no\_grad} désactive l'enregistrement des gradients.
+Chaque lot est envoyé vers le même périphérique que le modèle, puis passe
+dans le même calcul de perte que pendant l'entraînement.
+
+\notion{La perte renvoyée par le critère est déjà une moyenne sur les positions
+du lot. Pour réunir plusieurs lots, le code multiplie cette moyenne par
+\code{y.numel()}, additionne les contributions, puis divise par le nombre
+total de cibles.}
+\[
+ \mathcal L_{\mathrm{val}}
+   =\frac{\sum_{r=1}^{R}n_r\ell_r}{\sum_{r=1}^{R}n_r},
+ \qquad n_r=B_rT.
+\]
+Une moyenne non pondérée des $\ell_r$ n'est correcte que lorsque tous les
+lots contiennent le même nombre de cibles. Or le chargeur n'écarte pas
+systématiquement le dernier lot incomplet. L'unité pertinente est donc la
+position prédite, pas le numéro du lot.
+
+À la fin du parcours normal, \code{model.train(was\_training)} rétablit le
+mode initial. Si le modèle était déjà en évaluation, il y reste ; s'il était
+en entraînement, le dropout redevient actif pour le prochain lot.
+Cette restauration n'est pas protégée par un bloc \code{finally} :
+une exception pendant le parcours interrompt ce scénario normal.
+
+La division utilise \code{max(total\_tokens, 1)} pour éviter un dénominateur
+nul. Un chargeur vide conduirait ainsi à zéro, valeur technique qui ne
+prouverait aucune qualité prédictive. Le pipeline normal construit des
+datasets non vides et refuse les portions trop courtes.
+
+\exercice{Un lot de 32 cibles présente une perte moyenne de deux ; un second
+lot de huit cibles présente une perte de quatre. Calculer la validation
+correcte, la moyenne naïve et leur différence. Que compterait-on si deux
+fenêtres contenaient un même token du corpus ?}
+
+\corrige{La somme pondérée vaut $32\times2+8\times4=96$.
+La validation correcte vaut $96/40=2{,}4$, contre trois pour la moyenne naïve,
+soit une surestimation de $0{,}6$. Avec des fenêtres chevauchantes, chaque
+apparition comme cible compte séparément. La métrique porte sur les positions
+du dataset parcouru, et non sur les caractères distincts du fichier source.}
+
+\attention{Cette pondération suppose le critère moyen utilisé ici.
+Remplacer le critère par une somme sans adapter l'agrégation compterait
+deux fois les tailles de lots. Conserver le même contexte et le même pas
+de fenêtres reste nécessaire pour comparer des validations avec précision.}
+
+\fiche{80}{Interpréter les courbes sans inventer un test indépendant}{\src{06_train.py}{train : train_losses, val_losses, loss_curve.png}}
+\objectif{Utiliser les courbes comme des indices sur l'apprentissage, et non
+comme une certification de qualité. Une validation utile demande de connaître
+son origine, son mode de calcul et les décisions prises après l'avoir observée.}
+
+Le script trace les pertes train et validation par époque parcourue.
+Le texte est partagé avant apprentissage du tokenizer et création des
+fenêtres : la dernière fraction sert à la validation.
+Aucune fenêtre ne traverse cette frontière, mais aucun troisième ensemble
+de test n'est constitué.
+
+\notion{La perte d'entraînement agrège des lots vus avec dropout et avec des
+poids qui changent au fil de l'époque. La validation est calculée ensuite,
+sans dropout, avec les poids de fin d'époque. Les deux courbes n'évaluent
+donc pas exactement le même objet au même instant.}
+
+Un écart peut être résumé par
+\[
+ G_e=\mathcal L_{\mathrm{val},e}-\mathcal L_{\mathrm{train},e}.
+\]
+Un écart croissant, avec baisse du train et hausse durable de la validation,
+suggère un surapprentissage. Une oscillation isolée ne suffit pas :
+l'échantillonnage avec remise et des distributions différentes entre début
+et fin du texte peuvent aussi influencer les courbes.
+
+Le script ne sélectionne pas automatiquement la meilleure époque, n'arrête
+pas l'apprentissage selon la validation et ne conserve pas un checkpoint
+distinct pour chaque point. La sauvegarde finale contient les derniers poids,
+même si une époque précédente avait une validation plus faible.
+Un arrêt par \code{max\_steps} peut d'ailleurs terminer une époque partielle.
+
+Une perte de validation inférieure au train n'est pas impossible : l'absence
+de dropout et les poids plus récents peuvent l'expliquer. À l'inverse, des
+phrases plaisantes générées après coup ne remplacent pas une mesure systématique
+sur des données dont l'utilisation est clairement définie.
+
+\exercice{Considérer ces valeurs fictives : train $(2{,}0;1{,}4;1{,}0)$,
+validation $(2{,}1;1{,}7;1{,}9)$. Repérer la meilleure époque selon la validation,
+calculer les écarts et dire quel modèle la boucle sauvegarde si elle parcourt
+exactement ces trois époques.}
+
+\corrige{La meilleure validation est $1{,}7$, à la deuxième époque.
+Les écarts valent $0{,}1$, $0{,}3$, puis $0{,}9$. Le dernier mouvement suggère
+un surapprentissage, sans suffire à établir une loi générale.
+La boucle sauvegarde pourtant les poids de la troisième époque : aucune
+comparaison des minima ne pilote sa sauvegarde. Ces valeurs illustrent une
+lecture de courbe, pas un résultat mesuré sur le dépôt.}
+
+\attention{Choisir plusieurs hyperparamètres en consultant toujours la même
+validation finit par adapter les décisions à cette portion. Pour annoncer une
+généralisation indépendante, prévoir un protocole de test supplémentaire ;
+il n'est pas implémenté ici et ne doit pas être sous-entendu.}
+
+\fiche{81}{Atelier CPU : vérifier tout le parcours en quelques pas}{\src{06_train.py}{main, train}}
+\objectif{Préparer une première expérience courte qui entraîne, évalue et
+sauvegarde sans écraser le checkpoint habituel. Le succès recherché est
+technique : constater que les étapes se raccordent, pas obtenir un texte
+de qualité après quelques mises à jour.}
+
+Les commandes suivantes sont à exécuter par le lecteur, depuis un environnement
+où les dépendances du projet sont déjà installées. Le chemin du script et
+celui du répertoire de sortie sont absolus. Le corpus fourni reste sélectionné
+par défaut ; il convient au préréglage minuscule.
+
+\begin{lstlisting}[language=bash]
+python /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/06_train.py \
+    --device cpu --precision float32 --preset tiny \
+    --epochs 5 --max-steps 2 \
+    --checkpoint-dir /tmp/mini-gpt-atelier-cpu
+\end{lstlisting}
+
+\notion{\code{max\_steps} limite le compteur global des mises à jour, pas le
+nombre de pas de chaque époque. Dès que ce compteur atteint deux, la boucle
+termine le parcours d'entraînement en cours, effectue sa validation, puis
+sort également de la boucle des époques.}
+
+Le nombre de pas réalisé est le minimum entre cette limite et les pas
+disponibles sur les époques demandées. Même si cinq époques sont configurées,
+la courbe peut donc n'avoir qu'un point. La validation parcourt son chargeur
+complet : une limite courte sur l'entraînement ne borne pas directement son
+temps d'exécution.
+
+Observer les formes annoncées : pour un lot plein, $[B,T]=[8,32]$ et les
+logits ont la forme $[8,32,V]$. Vérifier ensuite la présence de
+\code{mini\_gpt.pt}, de \code{loss\_curve.png} et du dossier \code{tokens}
+dans le répertoire choisi. Ces sorties documentent respectivement les poids
+rechargeables, l'historique graphique et les données prétraitées.
+
+L'étape suivante utilise explicitement la sauvegarde de cet atelier :
+\begin{lstlisting}[language=bash]
+python /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/07_generate.py \
+    --checkpoint /tmp/mini-gpt-atelier-cpu/mini_gpt.pt \
+    --device cpu --prompt "bonjour " --max-new-tokens 8 --greedy
+\end{lstlisting}
+
+\exercice{Supposer que chacun des deux lots d'entraînement est plein.
+Combien de positions cibles ont contribué aux mises à jour ? Pourquoi ce
+nombre ne correspond-il pas nécessairement à autant de tokens distincts
+dans le corpus ?}
+
+\corrige{Chaque lot apporte $8\times32=256$ cibles ; deux lots en apportent
+512. Des fenêtres peuvent se chevaucher et l'échantillonnage s'effectue avec
+remise : plusieurs cibles peuvent donc provenir des mêmes positions du texte.
+Les cibles de validation ne sont pas ajoutées à ce total d'entraînement,
+même si leur traitement consomme du temps.}
+
+\attention{Aucun résultat n'est promis par ces commandes. Une sortie peu
+cohérente après deux pas est attendue comme possibilité, non comme anomalie.
+Employer un dossier neuf pour chaque expérience ; deux entraînements simultanés
+ne doivent pas partager leurs fichiers de tokens ni leur checkpoint.}
+
+\fiche{82}{Sauvegarder un modèle n'est pas reprendre un entraînement}{\src{06_train.py}{train : checkpoint, torch.save}}
+\objectif{Inventorier exactement les informations persistées et comprendre
+pourquoi un checkpoint suffisant pour générer ne permet pas nécessairement
+de reprendre la même trajectoire d'optimisation.}
+
+Le dictionnaire sauvegardé contient \code{model\_state\_dict},
+\code{config}, \code{tokenizer}, \code{tokenizer\_kind} et \code{metrics}.
+Pour le tokenizer caractère, il ajoute aussi \code{vocab}, afin de conserver
+une représentation compatible avec l'ancien format. La sauvegarde est
+écrite après la dernière époque parcourue et après la création de la courbe.
+
+\notion{\code{model\_state\_dict} conserve les tenseurs enregistrés du modèle,
+notamment les poids appris. \code{config} fournit les dimensions et les
+options nécessaires pour reconstruire l'architecture. \code{tokenizer}
+conserve la correspondance entre texte et identifiants, indispensable pour
+donner le même sens aux lignes des embeddings et aux colonnes des logits.}
+
+Les métriques comprennent les courbes, le temps, la mémoire et le débit,
+mais pas le protocole complet. Le chemin du corpus, sa copie,
+son empreinte et la fraction de validation ne sont pas archivés dans
+la configuration. Les conserver séparément permet de reconstituer les données.
+
+AdamW possède des mémoires propres, distinctes des poids du réseau. Schématiquement,
+l'état dynamique pertinent est
+\[
+ S_t=(\theta_t,m_t,v_t,t,\text{états aléatoires},\text{position des données}).
+\]
+Le fichier permet de retrouver $\theta_t$, mais ne sauvegarde pas l'état de
+l'optimiseur. Il ne stocke pas non plus les états complets des générateurs
+aléatoires ni la position du sampler. La graine initiale inscrite dans
+la configuration ne remplace pas ces états après plusieurs tirages.
+
+Le script d'entraînement ne propose d'ailleurs aucune option de reprise.
+Lancer à nouveau la commande construit un nouveau modèle et un nouvel
+optimiseur ; cela n'ouvre pas automatiquement le checkpoint présent dans
+le dossier de sortie.
+
+\exercice{Deux modèles possèdent exactement les mêmes poids. Le premier
+optimiseur a $\widehat m=1$ et $\widehat v=4$ pour une coordonnée ;
+le second vient d'être créé. Peut-on conclure que leurs prochaines mises à
+jour seront identiques si le prochain lot est identique ?}
+
+\corrige{Non. Le premier optimiseur transporte une direction et une échelle
+issues du passé, alors que le second calcule ses moments depuis zéro et
+utilise un autre compteur de correction du biais. Un même prochain gradient
+ne suffit donc pas à déterminer le même déplacement. Les poids identiques
+assurent plutôt des prédictions identiques dans des conditions d'évaluation
+identiques, sous réserve des arrondis numériques.}
+
+\attention{La sauvegarde convient à l'inférence et à l'étude des derniers poids.
+La présenter comme une reprise exacte serait trompeur. Une vraie reprise
+nécessiterait des champs et une logique supplémentaires, absents de cette
+implémentation pédagogique.}
+
+\fiche{83}{Recharger les formats récents, anciens et le cas absent}{\src{07_generate.py}{load_model_and_tokenizer}}
+\objectif{Suivre les branches du chargement sans confondre compatibilité,
+sécurité et génération aléatoire. Le chemin du checkpoint détermine ici
+un comportement important qu'un message de console permet ensuite de reconnaître.}
+
+Lorsqu'un fichier existe, le chargement appelle \code{torch.load} avec
+\code{map\_location='cpu'} et \code{weights\_only=True}. Les tenseurs sont
+d'abord chargés sur CPU ; après reconstruction et insertion des poids,
+le modèle est déplacé vers le périphérique et le type numérique demandés.
+Le mode évaluation est ensuite activé.
+
+\notion{Un checkpoint récent possède un champ \code{tokenizer}, reconstruit
+par \code{tokenizer\_from\_state}. Sinon, le chargeur suit la branche historique :
+il repart de \code{vocab}, restaure l'ordre \code{itos}, reconstruit
+\code{stoi} et retrouve l'identifiant de \code{<unk>}.}
+
+La configuration fournit $C,D,H,L,F$ et le dropout. Si les champs correspondants
+manquent dans un ancien checkpoint, les positions deviennent \code{learned}
+et l'attention \code{manual}. Une option explicite peut remplacer le backend
+d'attention au chargement, mais elle ne transforme pas des positions apprises
+en RoPE : cette architecture doit rester cohérente avec les poids enregistrés.
+
+Un fichier existant mais invalide provoque une erreur ; le programme ne masque
+pas cette erreur par un modèle aléatoire. Un chemin absent différent de la
+constante par défaut provoque également \code{FileNotFoundError}.
+En revanche, lorsque le chemin absent est exactement le chemin par défaut,
+le chargeur crée un tokenizer caractère depuis tout le petit corpus et
+un modèle neuf :
+\[
+ (C,D,H,L,F)=(32,64,4,2,256),\qquad p_{\mathrm{dropout}}=0{,}1.
+\]
+Les positions sont alors apprises et le backend vaut l'option demandée ou
+\code{manual}. La précision demandée s'applique aussi à ce modèle aléatoire.
+Le chargeur ne fixe pas lui-même une graine pour cette initialisation.
+
+\exercice{Comparer trois situations : le checkpoint par défaut est absent ;
+un autre chemin explicite est absent ; un ancien fichier valide possède
+seulement vocabulaire, configuration historique et poids. Que fait chaque branche ?}
+
+\corrige{La première construit des poids aléatoires et la CLI l'annonce.
+La deuxième lève une erreur de fichier absent. La troisième restaure le
+tokenizer caractère et les poids, en complétant les choix historiques
+par positions apprises et attention manuelle. Passer explicitement le chemin
+par défaut absent ne change pas la première branche : la comparaison porte
+sur le chemin, non sur la présence de l'option dans la commande.}
+
+\attention{\code{weights\_only=True} restreint le chargement ; ce n'est pas
+une garantie absolue contre tout fichier malveillant ou corrompu. Utiliser
+des checkpoints de confiance. Le rechargement BPE requiert aussi la dépendance
+facultative correspondante ; son absence ne justifie pas de remplacer
+silencieusement le tokenizer.}
+
+\fiche{84}{Générer à partir du dernier logit seulement}{\src{07_generate.py}{generate}}
+\objectif{Dérouler une génération autoregressive et comprendre pourquoi le
+modèle calcule plusieurs positions alors qu'une seule sert à choisir le
+prochain token. La génération prolonge une suite ; elle ne remplit pas
+simultanément tout un paragraphe futur.}
+
+La fonction vérifie que le nombre de nouveaux tokens est non négatif et que
+la température est finie. Elle active ensuite l'évaluation, encode le prompt
+et refuse une suite d'identifiants vide. Le tenseur initial \code{idx} possède
+une seule ligne : $B=1$. Son périphérique est celui des paramètres du modèle,
+et ses valeurs restent des entiers, même si les poids sont en précision réduite.
+
+\notion{À chaque tour, \code{idx[:, -model.context\_length:]} sélectionne les
+$C$ derniers identifiants au maximum. Sans cache, le modèle traite toute cette
+fenêtre. Dans les logits renvoyés, \code{logits[:, -1, :]} extrait les $V$
+scores de la dernière position, celle qui prédit immédiatement après le texte
+actuellement disponible.}
+
+Les autres positions prédisent des tokens déjà présents dans la fenêtre :
+elles étaient utiles pendant l'entraînement, où toutes les cibles étaient
+connues, mais ne doivent pas produire des nouveaux tokens indépendamment.
+La prolongation respecte la factorisation
+\[
+ P(u_1,\ldots,u_N\mid p)
+   =\prod_{s=1}^{N}P(u_s\mid p,u_1,\ldots,u_{s-1}),
+\]
+avec, dans ce modèle, une condition effectivement tronquée au contexte accessible.
+Après sélection, un unique identifiant est concaténé à \code{idx}.
+
+Le tableau complet des identifiants est conservé pour le décodage final,
+même lorsque le début du prompt n'est plus envoyé au modèle. Avec
+\code{verbose=True}, chaque tour affiche l'identifiant choisi et le texte
+partiel. Ces impressions sont pédagogiques ; elles peuvent ralentir une mesure
+si on les laisse actives.
+
+\exercice{Un prompt donne cinq tokens, le contexte vaut quatre et on demande
+trois nouveaux tokens sans cache. Quelles longueurs d'entrée le modèle voit-il
+aux trois appels ? Quelle longueur possède la suite finale ? Que se passe-t-il
+si l'on demande zéro token ?}
+
+\corrige{Les longueurs d'entrée sont quatre, quatre, puis quatre.
+La suite complète contient finalement huit identifiants : cinq initiaux et
+trois ajoutés. Avec zéro token, aucun passage du modèle n'est effectué dans
+la boucle ; la fonction renvoie le décodage du prompt encodé.
+Les validations initiales restent actives, donc un prompt vide est encore refusé.}
+
+\attention{Le texte renvoyé contient le prompt décodé et sa continuation.
+Un caractère inconnu peut devenir un point d'interrogation au décodage :
+zéro nouveau token ne garantit donc pas une identité textuelle pour tout prompt.
+Aucun token de fin ne stoppe la boucle ; seul le nombre demandé fixe sa longueur.}
+
+\fiche{85}{Calculer l'effet de la température}{\src{07_generate.py}{generate : temperature}}
+\objectif{Transformer l'idée intuitive de diversité en un calcul de probabilités.
+La température agit sur les écarts entre scores, sans réentraîner le modèle
+ni ajouter des connaissances à ses paramètres.}
+
+Pour une température strictement positive $\tau$, la fonction divise les
+logits par $\tau$, applique éventuellement le filtre top-k, puis calcule
+un softmax. Sans filtrage, la probabilité d'un token $i$ est
+\[
+ p_i(\tau)=\frac{e^{z_i/\tau}}{\sum_j e^{z_j/\tau}},
+ \qquad
+ \frac{p_i(\tau)}{p_j(\tau)}=e^{(z_i-z_j)/\tau}.
+\]
+La seconde égalité est particulièrement instructive : diminuer $\tau$ amplifie
+les rapports de probabilités entre scores différents. Augmenter $\tau$ les
+rapproche de un. L'ordre des scores reste inchangé, mais leur contraste
+probabiliste varie.
+
+\notion{La valeur zéro ne peut pas être utilisée dans cette division.
+Le code définit donc une autre branche pour toute température inférieure
+ou égale à zéro : il choisit directement l'argmax des logits bruts.
+Cette branche ignore entièrement le top-k et le choix d'échantillonnage.}
+
+Une température négative n'inverse ainsi pas les préférences dans ce programme.
+Elle sert au même choix glouton que zéro. Une valeur non finie, comme
+l'infini ou \code{NaN}, est refusée avant la boucle ; elle ne sert pas de
+raccourci vers une distribution uniforme.
+
+Pour une température positive, \code{sample=False} choisit l'argmax des
+probabilités au lieu d'appeler le tirage multinomial. Dans l'arithmétique
+idéale, changer une température positive ne change alors pas le gagnant :
+la division et le softmax préservent l'ordre, et le top-k conserve un maximum.
+Les égalités et les arrondis méritent néanmoins une attention particulière.
+Pour observer l'effet probabiliste de la température, il faut donc distinguer
+le calcul des probabilités de la règle finale de sélection : une distribution
+modifiée peut garder exactement le même maximum.
+
+\exercice{Deux tokens ont les scores $(\log4,0)$. Calculer leurs probabilités
+pour $\tau=1$, $\tau=2$ et $\tau=1/2$, sans top-k.
+Déterminer ensuite la sortie pour une température négative dans ce dépôt.}
+
+\corrige{Pour $\tau=1$, les poids exponentiels sont $(4,1)$, donc les
+probabilités $(4/5,1/5)$. Pour $\tau=2$, ils deviennent $(2,1)$,
+donc $(2/3,1/3)$. Pour $\tau=1/2$, ils deviennent $(16,1)$,
+donc $(16/17,1/17)$. Une température négative active directement l'argmax :
+le premier token est sélectionné, sans calculer ces probabilités.}
+
+\attention{Diversité et qualité ne sont pas synonymes. Une température élevée
+peut rendre plus fréquents des tokens peu plausibles ; une température faible
+peut favoriser des répétitions. Comparer les mêmes prompts et annoncer si
+la sélection est gloutonne ou aléatoire permet d'interpréter ce réglage
+sans lui attribuer des effets d'apprentissage inexistants.}
+
+\fiche{86}{Top-k : un seuil qui conserve aussi les égalités}{\src{07_generate.py}{top_k_logits, generate}}
+\objectif{Lire précisément le filtre de vocabulaire et son interaction avec
+le tirage multinomial. Le nom top-k suggère une cardinalité, mais l'implémentation
+emploie un seuil : cette différence apparaît lorsque plusieurs scores sont égaux.}
+
+Le filtre ne fait rien si \code{top\_k} vaut \code{None}, est inférieur ou
+égal à zéro, ou est supérieur ou égal à $V$. Sinon,
+\code{torch.topk} extrait les $k$ plus grandes valeurs. La dernière de ces
+valeurs devient un seuil $a$, utilisé séparément pour chaque ligne de logits.
+Le remplacement est
+\[
+ z'_i=
+ \begin{cases}
+ -\infty&\text{si }z_i<a,\\
+ z_i&\text{si }z_i\geq a.
+ \end{cases}
+\]
+La comparaison est strictement inférieure. Tous les tokens à égalité au seuil
+restent admissibles, même si leur nombre fait dépasser $k$. Après softmax,
+les scores remplacés par $-\infty$ reçoivent une probabilité nulle ; les autres
+sont renormalisés pour que leur somme vaille un.
+
+\notion{\code{torch.multinomial(probs, num\_samples=1)} choisit un identifiant
+selon cette distribution, et non uniformément parmi les candidats conservés.
+Un token plus probable peut donc être sélectionné plus souvent, sans devoir
+gagner à chaque appel.}
+
+Avec une température positive, le filtre intervient après la division des
+scores. Cette division préserve leur ordre mathématique ; elle modifie ensuite
+les proportions du tirage parmi les candidats restants. Avec une température
+non positive, le code contourne le filtre et prend directement un maximum.
+Avec \code{sample=False}, la branche positive sélectionne également un maximum,
+mais après avoir calculé les probabilités.
+
+\exercice{Prendre les logits $(\log4,\log2,\log2,0)$, une température égale
+à un et $k=2$. Combien de tokens sont conservés ? Calculer la distribution
+filtrée, puis la probabilité que deux tirages indépendants à distribution
+fixe choisissent tous deux le premier token.}
+
+\corrige{Le deuxième plus grand score vaut $\log2$. Les trois premiers tokens
+sont donc conservés ; le quatrième est exclu. Leurs poids $(4,2,2)$ donnent
+les probabilités $(1/2,1/4,1/4,0)$. Pour deux tirages indépendants de cette même
+distribution, la probabilité demandée est $(1/2)^2=1/4$.
+Pendant une génération réelle, le premier token ajouté modifie le contexte :
+la seconde distribution n'est généralement plus identique.}
+
+\attention{Même $k=1$ peut conserver plusieurs tokens si les maxima sont égaux :
+un échantillonnage reste alors possible entre eux. Dire « top-k garde exactement
+k tokens » serait donc inexact ici. Ce programme n'implémente ni top-p,
+ni pénalité de répétition, ni recherche par faisceaux ; ne pas déduire
+ces méthodes de la présence d'un simple filtre top-k.}
+
+\fiche{87}{Construire puis prolonger le cache des clés et valeurs}{\src{07_generate.py}{generate ; 05_model.py : forward}}
+\objectif{Suivre les formes du cache KV pendant le préremplissage et la
+génération incrémentale. Le cache évite certains recalculs du passé, mais
+ne contient ni une réponse mémorisée ni tous les logits précédents.}
+
+Au premier appel avec cache, \code{past\_key\_values} vaut \code{None}.
+Le modèle traite le prompt, tronqué à $C$ tokens si nécessaire. Ce
+préremplissage calcule les clés et les valeurs à chaque couche.
+Le retour possède alors trois éléments : les logits, la perte ici absente,
+et un tuple contenant une paire de tenseurs par couche.
+
+\notion{Si $P$ positions sont déjà mémorisées, chaque paire a deux tenseurs
+de forme $[B,H,P,d_k]$, avec $d_k=D/H$. La mémoire couvre les représentations
+propres à chacune des $L$ couches : partager une seule paire entre toutes
+les couches ne représenterait pas le même modèle.}
+
+Tant que $P<C$, l'appel suivant reçoit seulement le dernier token ajouté.
+Les nouvelles projections ont une longueur temporelle de un, puis les clés
+et valeurs sont concaténées à celles du cache. Les formes utiles deviennent
+\[
+ Q:[B,H,1,d_k],\qquad
+ K,V_{\mathrm{att}}:[B,H,P+1,d_k].
+\]
+La requête du nouveau token consulte ainsi tout le passé encore conservé.
+Ses positions commencent à l'offset $P$ : embeddings appris ou rotations
+RoPE utilisent ce décalage. Les anciennes clés RoPE, déjà tournées, ne
+doivent pas subir une seconde rotation.
+
+Le masque causal compare les positions des requêtes à celles des clés ;
+il reste correct même lorsque ces deux longueurs diffèrent. Le modèle
+vérifie aussi que toutes les couches partagent la même longueur passée
+et que la somme passé plus nouvelles positions ne dépasse pas $C$.
+
+\exercice{Avec $B=1$, $H=4$, $D=64$, $L=2$ et un prompt de trois tokens,
+donner la forme de chaque tenseur du cache après préremplissage, puis après
+l'appel incrémental suivant. Combien de nombres le cache contient-il à
+chacune de ces étapes ?}
+
+\corrige{Chaque tête possède $d_k=16$ composantes. Les formes sont
+$[1,4,3,16]$, puis $[1,4,4,16]$. Il existe deux tenseurs par couche et deux
+couches : les totaux sont $2\times2\times1\times4\times3\times16=768$,
+puis 1024 nombres. Juste après le choix d'un token, celui-ci figure dans
+\code{idx}, mais n'entre dans le cache qu'au prochain passage du modèle.}
+
+\attention{Le cache est réservé au mode évaluation sans cibles. La fonction
+de génération désactive aussi les gradients. Une vérification de formes
+ne prouve pas qu'un cache provient du bon prompt : l'appelant doit respecter
+la continuité de la séquence et ne jamais mélanger deux historiques.}
+
+\fiche{88}{Au débordement, reconstruire toute la fenêtre}{\src{07_generate.py}{generate : condition de débordement du cache}}
+\objectif{Comprendre le choix exact de fenêtre glissante et ses conséquences
+sur les positions, l'équivalence avec le calcul sans cache et les performances.
+Le comportement à saturation est aussi important que le premier gain incrémental.}
+
+À chaque tour, la génération prépare d'abord les $C$ derniers tokens de
+\code{idx}. Si un cache existe et si sa longueur est strictement inférieure
+à $C$, elle remplace cette entrée par le seul dernier token. Dans tous
+les autres cas, elle remet le cache à \code{None} et traite la fenêtre
+complète préparée au début du tour.
+
+\notion{Lorsque le cache atteint $C$, le programme n'enlève pas simplement
+sa première clé et sa première valeur. Il reconstruit toutes les couches
+sur les derniers $C$ tokens, avec des positions qui repartent de zéro.
+C'est aussi la convention du passage sans cache sur cette fenêtre.}
+
+Pour les positions apprises, décaler des tokens change directement leurs
+vecteurs positionnels. Avec RoPE, une translation commune préserve certaines
+relations relatives des rotations, mais cela ne suffit pas à recycler
+naïvement toutes les représentations : les états cachés des couches précédentes
+ont aussi intégré des tokens désormais sortis de la fenêtre.
+Le dépôt applique donc la même reconstruction aux deux variantes.
+
+Si $s$ tokens sont présents avant un choix, la longueur traitée sans cache est
+\[
+ T=\min(s,C).
+\]
+Après saturation, elle vaut aussi $C$ avec cache. Chaque ajout fait glisser
+la fenêtre ; le cache plein est donc abandonné au tour suivant.
+Le gain incrémental disparaît durablement, pas seulement lors d'un passage.
+
+\exercice{Prendre $C=4$, un prompt de deux tokens et demander cinq nouveaux
+tokens avec cache. Donner les longueurs des entrées effectivement transmises
+aux cinq appels du modèle. Indiquer les positions utilisées lors du premier
+appel reconstruit.}
+
+\corrige{Les longueurs sont deux pour le préremplissage, un pour l'ajout à
+un cache de longueur deux, puis un pour atteindre quatre positions.
+Au quatrième appel, le cache plein est abandonné : l'entrée contient quatre
+tokens. Au cinquième, une nouvelle fenêtre de quatre tokens est encore
+reconstruite. Les positions du quatrième appel sont zéro, un, deux et trois,
+et non les indices absolus dans toute la conversation.}
+
+\attention{Les tests comparent les sorties gloutonnes avec et sans cache
+de part et d'autre de cette frontière. Ils contrôlent une équivalence de
+comportement sur leurs exemples, pas un gain permanent de vitesse.
+RoPE ne rend ni le cache ni le contexte illimités, et un prompt déjà long
+peut placer la génération immédiatement dans le régime sans gain incrémental.}
+
+\fiche{89}{Estimer le coût du cache sans promettre une vitesse}{\src{03_attention.py}{MultiHeadSelfAttention.forward ; 07_generate.py : generate}}
+\objectif{Comparer des ordres de grandeur en séparant calcul, stockage et
+temps réellement mesuré. Une formule de complexité explique une tendance ;
+elle ne prédit pas seule le comportement d'un processeur ou d'un GPU.}
+
+Pour une séquence de longueur $T$, le produit entre requêtes et clés construit
+des interactions entre toutes les paires de positions. Sur les $H$ têtes,
+le travail dominant de cette partie est proportionnel à $BT^2D$ par couche.
+Les projections et le réseau intermédiaire ajoutent des coûts proportionnels
+à $BTD^2$ et $BTDF$. La projection finale vers le vocabulaire ajoute
+également un travail proportionnel à $BTDV$.
+
+\notion{Sans cache, chaque token généré redemande ces calculs pour toute
+la fenêtre. Avant saturation, le cache permet de ne projeter que le nouveau
+token ; son attention consulte toutefois les $P$ clés précédentes.
+La partie attention devient alors proportionnelle à $B(P+1)D$ par couche,
+au lieu d'une attention complète quadratique sur cette longueur.}
+
+Sur une croissance idéale de longueur un à $N$, sans débordement et en
+isolant les interactions d'attention, on compare
+\[
+ \sum_{t=1}^{N}t^2=O(N^3)
+ \quad\text{à}\quad
+ \sum_{t=1}^{N}t=O(N^2).
+\]
+Le préremplissage initial reste à payer. Ces ordres ne décrivent pas le
+régime saturé du dépôt : une fois la fenêtre pleine, les reconstructions
+répétées réintroduisent le calcul complet sur $C$ positions.
+
+Le cache consomme aussi de la mémoire. Pour $P$ positions et $s$ octets
+par nombre, les clés et valeurs de toutes les couches représentent
+\[
+ M_{\mathrm{KV}}=2LBHPd_k s=2LBPDs.
+\]
+Cette estimation ne compte ni les paramètres, ni les activations temporaires,
+ni les copies produites par les concaténations. Elle décrit seulement
+le contenu numérique persistant des paires KV.
+
+\exercice{Calculer cette mémoire pour $L=2$, $B=1$, $P=32$, $D=64$ en
+\code{float32}, avec quatre octets par nombre. Que devient-elle en
+\code{bfloat16}, à deux octets ? Est-ce la mémoire totale de génération ?}
+
+\corrige{On compte $2\times2\times1\times32\times64=8192$ nombres.
+Ils occupent 32768 octets, soit 32 Kio en \code{float32}, et 16384 octets,
+soit 16 Kio en \code{bfloat16}. Ce n'est pas le total : il faut notamment
+ajouter le modèle, les logits, les calculs intermédiaires et les allocations
+de la bibliothèque.}
+
+\attention{Sur un petit modèle CPU, les appels Python, les concaténations
+et le décodage peuvent masquer une économie arithmétique. Une attention SDPA
+peut aussi changer les coûts temporaires sans changer cette formule du cache.
+Mesurer sur le matériel visé reste indispensable ; aucune accélération
+numérique n'est déduite automatiquement de ces seuls ordres de grandeur.}
+
+\fiche{90}{Deux usages différents de bfloat16}{\src{06_train.py}{train, evaluate ; 07_generate.py : load_model_and_tokenizer}}
+\objectif{Distinguer calcul en précision mixte et conversion des poids.
+Le même nom d'option n'entraîne pas exactement les mêmes opérations pendant
+l'apprentissage et pendant le chargement pour la génération.}
+
+Un nombre \code{float32} occupe quatre octets, contre deux pour
+\code{bfloat16}. Ce dernier conserve une large plage d'exposants, mais
+moins de chiffres significatifs. Il peut donc représenter des valeurs de
+grandes amplitudes tout en arrondissant plus fortement des nombres proches.
+Réduire la taille ne signifie ni conserver toutes les décimales ni réduire
+automatiquement chaque allocation du programme.
+
+\notion{Dans \code{train}, le modèle est envoyé vers le périphérique sans
+conversion explicite de son type : ses paramètres restent normalement en
+\code{float32}. Le passage avant et le calcul de perte sont entourés de
+\code{torch.autocast}, activé seulement lorsque la précision demandée est
+\code{bfloat16}. PyTorch choisit alors les types selon les opérations.}
+
+La rétropropagation intervient après ce contexte. Le script ne construit
+pas de \code{GradScaler} et ne propose pas l'option \code{float16}.
+La validation emploie le même mécanisme d'autocast, en plus du mode
+évaluation et de l'absence de gradients. Le passage initial d'affichage
+des formes, lui, n'est pas entouré de cet autocast.
+
+À l'inférence, le chargeur construit le modèle, charge les poids, puis appelle
+\code{model.to(device=device, dtype=dtype)}. Ici, choisir
+\code{bfloat16} convertit réellement les paramètres flottants du modèle.
+La fonction \code{generate} n'ajoute pas un contexte d'autocast analogue à
+celui de l'entraînement. Ses identifiants de tokens restent des entiers.
+
+Autour de un, l'écart entre nombres représentables illustre la différence :
+\[
+ \Delta_{\mathrm{bf16}}=2^{-7}=0{,}0078125,
+ \qquad
+ \Delta_{\mathrm{fp32}}=2^{-23}.
+\]
+Deux logits très proches peuvent devenir indiscernables après arrondi,
+ce qui peut affecter un argmax et, par propagation, toute la suite générée.
+
+\exercice{Un modèle contient exactement un million de paramètres flottants.
+Estimer leur stockage en \code{float32} puis après conversion
+\code{bfloat16}. La métrique des octets de paramètres doit-elle forcément
+être divisée par deux pendant l'entraînement avec autocast ?}
+
+\corrige{Les paramètres seuls occupent quatre millions puis deux millions
+d'octets. Pendant l'entraînement décrit, l'autocast ne convertit pas durablement
+tous les paramètres : leur compteur d'octets peut rester celui de
+\code{float32}. Il serait donc incorrect d'assimiler automatiquement
+précision des calculs et taille des poids stockés.}
+
+\attention{Sur CPU, la disponibilité et la rapidité des opérations réduites
+dépendent du matériel et de PyTorch. Commencer par \code{float32}, puis
+comparer explicitement exactitude et durée. Une précision réduite n'est
+ni une quantification entière ni une garantie d'accélération sur toute machine.}
+
+\fiche{91}{Mesurer SDPA et le cache avec un protocole explicite}{\src{07_generate.py}{main : benchmark}}
+\objectif{Lire le chronomètre comme une expérience contrôlée. Deux chemins
+équivalents mathématiquement ne possèdent pas toujours la même vitesse, et
+une mesure isolée ne suffit pas à identifier une accélération fiable.}
+
+Le mode \code{--benchmark} compare successivement la génération sans cache,
+puis avec cache, sur le même modèle chargé. Il force une température nulle
+et désactive les impressions intermédiaires. Les options habituelles de
+température et de top-k ne pilotent donc pas cette comparaison : le but
+est de confronter des continuations gloutonnes.
+
+\begin{lstlisting}[language=bash]
+python /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/07_generate.py \
+    --checkpoint /tmp/mini-gpt-atelier-cpu/mini_gpt.pt \
+    --device cpu --prompt "bonjour " --max-new-tokens 16 \
+    --attention-backend sdpa --benchmark
+\end{lstlisting}
+
+\notion{Avant chaque mesure, le programme effectue une génération d'un token
+d'échauffement. Sur CUDA, il synchronise le périphérique et remet à zéro
+le compteur de pic mémoire, puis lance le chronomètre. Une seconde
+synchronisation précède la lecture du temps final.}
+
+Les opérations GPU peuvent être lancées de manière asynchrone. Sans
+synchronisation finale, on risquerait de mesurer principalement leur soumission
+plutôt que leur achèvement. Sur CPU, ces appels CUDA sont absents.
+Le temps mesuré englobe la fonction de génération, notamment l'encodage
+du prompt, les opérations de sélection et le décodage final.
+
+Pour comparer attention manuelle et SDPA, répéter la même commande en
+remplaçant uniquement la valeur de \code{--attention-backend} par
+\code{manual}. SDPA est une interface de PyTorch qui choisit une implémentation
+compatible. Elle ne garantit pas Flash Attention : matériel, type numérique,
+formes et version peuvent conduire à un autre chemin, notamment sur CPU.
+
+Le débit affiché est
+\[
+ q=\frac{N_{\mathrm{nouveaux\ tokens}}}{\Delta t}.
+\]
+La mesure affiche aussi l'égalité des deux textes gloutons. Cette égalité
+est utile, mais ne démontre pas une identité de tous les logits :
+des différences d'arrondi peuvent rester sans effet sur les maxima.
+
+\exercice{Un protocole fictif mesure vingt tokens en une demi-seconde,
+puis en quatre dixièmes de seconde. Calculer les débits et le rapport
+d'accélération. Donner deux raisons de ne pas généraliser immédiatement.}
+
+\corrige{Les débits valent 40 et 50 tokens par seconde ; le rapport de
+vitesse vaut $0{,}5/0{,}4=1{,}25$. Ces valeurs sont purement illustratives.
+La variabilité des mesures et le choix du prompt peuvent changer la
+conclusion ; notamment, un contexte saturé supprime ici le gain incrémental.}
+
+\attention{Répéter les mesures, conserver le même matériel et le même dtype,
+et noter l'ordre des essais. Un échauffement d'un token reste modeste.
+Ne pas attribuer à SDPA un résultat obtenu en changeant simultanément
+le checkpoint, la précision et la longueur demandée.}
+
+\fiche{92}{Comprendre le débit et les compteurs de mémoire}{\src{06_train.py}{train : metrics}}
+\objectif{Associer chaque métrique à son numérateur, son dénominateur et son
+périmètre. Un nombre correctement calculé peut être mal interprété si son
+intitulé est raccourci dans un tableau de résultats.}
+
+Le compteur \code{tokens\_seen} augmente de \code{y.numel()} après chaque
+mise à jour. Il compte donc les positions cibles des lots d'entraînement
+effectivement traités. Les fenêtres chevauchantes et l'échantillonnage avec
+remise peuvent compter plusieurs fois la même position source.
+La validation n'augmente pas ce compteur.
+
+\notion{Le temps démarre avant l'affichage des formes et avant les époques,
+mais après le prétraitement des données et la construction du modèle.
+Il s'arrête après les validations, avant la création de la figure et
+la sauvegarde du checkpoint. Le débit est donc celui des tokens
+d'entraînement avec le temps de validation inclus.}
+\[
+ q_{\mathrm{train}}=\frac{\text{positions cibles entraînées}}
+ {\text{durée mesurée, validation comprise}}.
+\]
+Les impressions de progression et le passage pédagogique initial contribuent
+aussi à cette durée. Une expérience de seulement quelques pas peut être
+fortement influencée par ces coûts fixes ; elle n'est pas forcément
+représentative d'un entraînement long.
+
+Le nombre de paramètres additionne \code{numel()} sur les paramètres
+enregistrés. Leur volume additionne
+\code{p.numel() * p.element\_size()}. Il ne comprend pas toutes les autres
+allocations : gradients, moments d'AdamW, activations conservées pour le
+retour arrière, lots, bibliothèque et interpréteur consomment aussi de la
+mémoire. Les poids d'entrée et de sortie n'étant pas liés, les deux ensembles
+participent au nombre affiché.
+
+Sur CUDA, \code{max\_memory\_allocated} mesure le pic des allocations de
+tenseurs suivies par PyTorch depuis la remise à zéro du compteur.
+Ce n'est ni toute la mémoire réservée par son allocateur ni toute la
+mémoire occupée par le processus sur la carte. Sur CPU,
+\code{peak\_cuda\_bytes} vaut \code{None} : aucun pic CPU n'est mesuré.
+
+\exercice{Supposer 2048 positions d'entraînement, deux secondes pour leurs
+calculs et une seconde supplémentaire de validation et autres opérations
+chronométrées. Calculer le débit publié et le débit qui ignorerait ce
+surcoût. Pourquoi les deux ne répondent-ils pas à la même question ?}
+
+\corrige{Le débit publié vaut $2048/3\simeq682{,}7$ positions par seconde.
+Un débit limité aux calculs d'entraînement vaudrait $2048/2=1024$.
+Le premier décrit le coût du parcours mesuré ; le second isolerait une
+partie du travail. Le script ne mesure pas séparément cette deuxième durée :
+elle a seulement été supposée pour l'exercice.}
+
+\attention{Conserver l'intitulé complet
+\code{training\_tokens\_per\_second\_including\_validation} dans les données
+archivées, quitte à l'expliquer en français dans un graphique.
+La taille des paramètres n'est jamais à présenter comme la mémoire
+totale requise pour entraîner ou générer.}
+
+\fiche{93}{Ce que prouvent réellement les tests d'intégration}{\src{tests/test_integration.py}{IntegrationTests}}
+\objectif{Lire une assertion comme une garantie locale, sans transformer un
+test technique réussi en évaluation linguistique. Les tests du dépôt utilisent
+\code{unittest}, la bibliothèque standard de Python, et de petits modèles CPU.}
+
+La commande ciblée ci-dessous sélectionne le fichier d'intégration existant.
+Elle est proposée au lecteur ; son écriture dans ce manuel ne signifie
+pas qu'une exécution et ses résultats sont rapportés ici.
+\begin{lstlisting}[language=bash]
+python -m unittest discover \
+    -s /home/runner/work/SHOKOBO/SHOKOBO/mini_gpt/tests \
+    -p test_integration.py -v
+\end{lstlisting}
+
+\notion{\code{test\_train\_reload\_character\_defaults} entraîne pendant un
+pas, vérifie notamment $D=64$, $C=32$, les variantes par défaut, une entrée
+de validation et la création de la courbe. Il recharge ensuite le modèle
+et vérifie une génération de trois tokens depuis \code{bonjour }.}
+
+\code{test\_bpe\_training\_reload} couvre un entraînement BPE miniature avec
+RoPE et SDPA, la restauration des identifiants, un aller-retour accentué
+et des générations avec et sans cache. Si la dépendance \code{tokenizers}
+manque, ce test est ignoré : il ne faut pas annoncer cette branche comme
+validée dans un tel environnement.
+
+\code{test\_legacy\_checkpoint} fabrique une ancienne sauvegarde et compare
+les logits rechargés avec ceux du modèle initial.
+\code{test\_cache\_generation\_across\_window\_boundary} compare les textes
+gloutons pour positions apprises et RoPE, attention manuelle et SDPA,
+avec un prompt court puis un prompt plus long que le contexte.
+
+\code{test\_empty\_prompt\_and\_zero\_generation} vérifie le refus du prompt
+vide et le cas de zéro ajout. \code{test\_split\_precedes\_windows} contrôle
+la séparation de listes avant fenêtrage dans le helper
+\code{create\_dataloaders}. Cette assertion ne couvre pas à elle seule
+tout le prétraitement memmap réellement utilisé par \code{train}.
+
+\code{test\_invalid\_options} examine plusieurs options refusées :
+époques nulles, pas nul, limite négative, préréglage inconnu, précision non
+prévue et taux non fini. Enfin, \code{test\_notebook\_code\_syntax}
+compile chaque cellule de code du notebook sans l'exécuter.
+
+\exercice{Le test caractère obtient une chaîne de longueur onze après trois
+ajouts au prompt \code{bonjour }. Prouve-t-il une bonne syntaxe française ?
+Le test du notebook prouve-t-il que toutes ses cellules s'exécutent correctement ?}
+
+\corrige{Non aux deux questions. Le prompt contient huit caractères connus ;
+trois tokens caractères expliquent la longueur onze, indépendamment de leur
+qualité linguistique. Compiler une cellule vérifie sa syntaxe Python,
+mais pas la présence des dépendances, les valeurs des variables ni
+la réussite de ses calculs lors d'une exécution.}
+
+\attention{Un test réussi ne démontre que les propriétés effectivement
+assertées dans ses conditions. Ces tests ne mesurent ni une accélération
+matérielle ni la généralisation du modèle, et leurs exemples finis ne
+remplacent pas toutes les vérifications de formes et de limites.}
+
+\fiche{94}{Comparer des expériences à unités constantes}{\src{README.md}{Checkpoints et comparaisons}}
+\objectif{Construire une comparaison interprétable où chaque changement a
+une signification identifiable. La reproductibilité commence par les données,
+les unités et les options, pas seulement par l'ajout d'une graine aléatoire.}
+
+Pour comparer deux variantes d'architecture, fixer le corpus, sa séparation,
+le tokenizer, le contexte, le pas des fenêtres et la validation. Changer
+plusieurs éléments simultanément rend difficile l'attribution d'un gain
+à une seule cause. Par exemple, une validation plus facile peut réduire
+la perte même sans amélioration du modèle.
+
+\notion{Une perte moyenne est exprimée par token. Or un token caractère
+et un token BPE ne couvrent pas la même quantité de texte. Leurs pertes
+brutes et leurs débits en tokens par seconde ne sont donc pas directement
+comparables, même lorsque les deux entraînements lisent un même fichier.}
+
+La perplexité conserve cette dépendance à l'unité :
+\[
+ \mathrm{PPL}=e^{\mathcal L}.
+\]
+Transformer la perte en perplexité ne résout donc pas le problème.
+Une étude entre tokenizers peut examiner les mêmes prompts décodés,
+la mémoire et le temps pour une quantité comparable de texte.
+Annoncer comment cette quantité est mesurée, sans réutiliser
+aveuglément une métrique par token.
+
+Le script appelle \code{torch.manual\_seed} avec la graine de configuration.
+Cela contrôle des tirages PyTorch, mais ne garantit pas une identité universelle
+entre matériels, versions, backends et types numériques. La CLI de génération
+ne possède pas d'option \code{--seed} et son échantillonnage n'est pas
+automatiquement fixé par la graine enregistrée dans le checkpoint.
+
+Comparer cache et backend avec un même checkpoint, son tokenizer
+et des prompts identiques, en sélection gloutonne.
+Pour les entraînements, séparer les dossiers de sortie, relever les
+configurations et répéter avec plusieurs graines plutôt que retenir
+seulement le meilleur cas.
+
+\exercice{Un modèle caractère affiche une perte fictive de $1{,}5$, un modèle
+BPE une perte de $2{,}0$. Peut-on classer leur qualité ? Puis deux modèles
+utilisent exactement le même tokenizer et la même validation, avec pertes
+$1{,}5$ et $1{,}4$ : calculer le rapport de leurs perplexités.}
+
+\corrige{La première comparaison ne permet pas un classement direct :
+les unités diffèrent. Dans la seconde, le rapport est
+$e^{1{,}5}/e^{1{,}4}=e^{0{,}1}\simeq1{,}105$ ; le second modèle possède
+une perplexité plus faible sur cette validation. Cela ne garantit
+pas une meilleure réponse à chaque prompt ni une amélioration hors distribution.}
+
+\attention{Archiver versions, matériel, précision et commandes exactes.
+Une graine unique n'est pas un intervalle d'incertitude. Les textes produits
+doivent également être choisis selon un protocole annoncé, et non sélectionnés
+après coup uniquement parce qu'ils donnent une impression favorable.}
+
+\fiche{95}{Diagnostiquer une erreur avant de changer le modèle}{\src{06_train.py}{validations ; 07_generate.py : generate, load_model_and_tokenizer}}
+\objectif{Classer les échecs par étape pour corriger leur cause plutôt que
+multiplier des modifications au hasard. Un modèle pédagogique peut être
+techniquement correct et produire malgré tout un texte peu convaincant.}
+
+Vérifier chemin du corpus, encodage UTF-8, longueur des portions et valeurs
+positives pour le contexte, le batch, les couches et le pas des fenêtres.
+Une portion de $N$ tokens doit contenir une cible après la fenêtre d'entrée :
+\[
+ N>C,\qquad D\bmod H=0,\qquad
+ \text{avec RoPE : }(D/H)\bmod2=0.
+\]
+La première condition concerne les données ; les autres, l'architecture.
+Augmenter les époques ne corrige aucune de ces erreurs.
+
+\notion{Une erreur de chargement n'est pas une erreur de génération.
+Vérifier le chemin du checkpoint, son format, la configuration et la présence
+de la dépendance BPE avant de modifier la température. Un fichier explicitement
+demandé mais absent, hors chemin par défaut, doit provoquer une erreur
+plutôt qu'une substitution silencieuse par des poids aléatoires.}
+
+Pour un problème de cache, contrôler le mode évaluation, l'absence de cibles,
+le nombre de paires égal à $L$, leurs formes, leurs périphériques et leurs
+types. La somme des tokens passés et nouveaux doit rester dans le contexte.
+La génération gère le débordement par reconstruction ;
+un appel direct doit respecter ces contraintes.
+
+Si la perte devient non finie, vérifier les entrées et le taux d'apprentissage,
+puis revenir à une configuration petite en \code{float32}. Le code refuse
+un taux non fini, mais ne garantit pas qu'un taux fini excessif entraîne
+de façon stable. Il n'applique pas de clipping pour rattraper automatiquement
+une telle situation.
+
+Une génération répétitive peut refléter un petit corpus, peu d'apprentissage
+ou un choix glouton. La température change la sélection, pas les connaissances.
+Le projet n'implémente ni format de dialogue,
+ni adaptation aux instructions, ni RLHF, ni récupération documentaire,
+ni mécanisme de vérification factuelle.
+
+\exercice{Diagnostiquer trois cas : un prompt vide avec zéro token demandé ;
+une configuration RoPE avec $D=60$, $H=4$ ; une génération qui continue
+après un point final jusqu'à vingt ajouts. Lesquels constituent des erreurs ?}
+
+\corrige{Le prompt vide est refusé avant la boucle, même pour zéro ajout.
+La dimension par tête vaut quinze : elle est impaire, donc RoPE est refusé.
+La continuation après un point n'est pas une erreur d'arrêt : aucun EOS
+ni signe de ponctuation ne déclenche l'arrêt dans ce programme.
+La longueur demandée commande seule le nombre d'ajouts.}
+
+\attention{Ne pas attribuer une compréhension fiable à une phrase plausible.
+Ce modèle prédit des tokens et peut inventer des affirmations.
+Ses limites pédagogiques ne sont pas des options cachées qu'une commande
+de génération permettrait d'activer.}
+
+\fiche{96}{Projet final : expliquer, vérifier et conclure avec prudence}{\src{06_train.py}{train ; 07_generate.py : generate ; tests/test_integration.py}}
+\objectif{Assembler un compte rendu qui relie les données, les dimensions,
+l'apprentissage et la génération. Le projet final évalue la solidité
+du raisonnement autant que la capacité à lancer une commande.}
+
+Choisir un corpus local autorisé, suffisamment long. Décrire sa séparation,
+le tokenizer et les fenêtres. Avec une configuration adaptée au CPU,
+réaliser un essai court dans un dossier distinct. Conserver commandes
+absolues, versions et paramètres effectifs ; ce contrôle technique
+ne prouve pas la qualité.
+
+\notion{Le rapport doit suivre une prédiction complète : un identifiant
+désigne un embedding, les blocs causaux produisent une représentation,
+la tête fournit $V$ logits, et la perte compare ces scores au token suivant.
+Les gradients modifient les poids ; la génération réutilise ensuite
+les derniers logits sans effectuer cet apprentissage.}
+
+Comparer les courbes avec leurs limites, recharger le checkpoint et expliquer
+ses champs. Examiner enfin les continuations sur une petite liste fixée de
+prompts, avec et sans cache en mode glouton. Une différence exige une enquête ;
+une égalité ne démontre ni une accélération ni une qualité linguistique.
+Séparer clairement observations effectuées, calculs théoriques et hypothèses.
+
+\exercice{Évaluation de synthèse, avec nombres fictifs. Choisir
+$B=2$, $C=T=8$, $D=16$, $H=2$, $L=2$, $F=32$ et RoPE.
+Deux lots de validation contiennent seize puis huit cibles et ont les pertes
+deux puis trois. Un prompt de trois tokens reçoit six ajouts avec cache.
+Vérifier l'architecture, calculer la validation, donner les longueurs des
+six appels et dire si le checkpoint permet une reprise exacte d'AdamW.}
+
+\corrige{La dimension par tête est huit, entière et paire : RoPE est valide.
+La validation vaut
+$(16\times2+8\times3)/24=7/3$ nats par cible.
+Les longueurs des appels sont trois, un, un, un, un, un :
+le sixième atteint un cache de longueur huit. Un septième appel
+reconstruirait toute la fenêtre. Le checkpoint conserve les poids, mais
+pas les moments d'AdamW ni tous les états nécessaires à une reprise exacte.
+Ces réponses n'utilisent aucun résultat d'entraînement supposé.}
+
+Pour prolonger l'étude, consulter les sources primaires :
+la \href{https://pytorch.org/docs/stable/index.html}{documentation PyTorch}
+pour \code{CrossEntropyLoss}, AdamW, autocast et SDPA ;
+\href{https://arxiv.org/abs/1706.03762}{\emph{Attention Is All You Need}}
+pour le Transformer ;
+\href{https://arxiv.org/abs/2104.09864}{\emph{RoFormer}}
+pour les positions rotatives. Lire ces textes comme des références,
+pas comme une description automatique de chaque choix de ce dépôt.
+
+\attention{La réussite finale consiste à pouvoir justifier une forme,
+une équation, une commande et une limite à partir du code réel.
+Sans test indépendant, sans mesure réalisée ou sans mécanisme implémenté,
+ne pas annoncer respectivement une généralisation, une accélération
+ou une capacité d'assistant que le projet n'a pas démontrée.}
