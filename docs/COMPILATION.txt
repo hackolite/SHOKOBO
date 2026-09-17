@@ -1,0 +1,58 @@
+MANUEL MINIGPT — SOURCE LATEX ET PDF A4
+
+Entrée :
+/home/runner/work/SHOKOBO/SHOKOBO/docs/manuel-mini-gpt.tex
+
+PDF :
+/home/runner/work/SHOKOBO/SHOKOBO/docs/manuel-mini-gpt.pdf
+
+Le manuel est composé de quatre pages liminaires et de 96 fiches
+pédagogiques avec exercices corrigés, soit 100 pages, couverture comprise.
+La pagination est vérifiée sur le PDF livré, pas seulement demandée au
+moteur LaTeX. Chaque fiche a son objectif et une référence au code étudié.
+
+PRÉREQUIS
+
+Une distribution TeX Live avec pdfLaTeX, les fontes Latin Modern,
+babel-french et les paquets du préambule suffit. Aucun appel externe
+de type shell-escape, aucun service distant et aucune dépendance Python
+ne sont nécessaires pour compiler le manuel.
+
+Sur Debian/Ubuntu, les paquets utilisés pour produire le PDF sont :
+texlive-latex-base texlive-latex-recommended texlive-fonts-recommended
+texlive-lang-french lmodern
+
+poppler-utils fournit pdfinfo et pdftotext pour contrôler le résultat.
+
+COMPILATION
+
+Depuis le dossier du document (adapter la racine du clone si nécessaire) :
+
+cd /home/runner/work/SHOKOBO/SHOKOBO/docs
+pdflatex -interaction=nonstopmode -halt-on-error manuel-mini-gpt.tex
+pdflatex -interaction=nonstopmode -halt-on-error manuel-mini-gpt.tex
+pdflatex -interaction=nonstopmode -halt-on-error manuel-mini-gpt.tex
+
+Les passes supplémentaires stabilisent le sommaire et les liens.
+Ne pas compiler séparément les fragments du dossier chapitres.
+Le PDF est versionné pour une lecture immédiate ; les fichiers auxiliaires
+de compilation sont ignorés par Git.
+
+VÉRIFICATION
+
+pdfinfo /home/runner/work/SHOKOBO/SHOKOBO/docs/manuel-mini-gpt.pdf
+
+La sortie attendue indique 100 pages et un format A4 (environ 595 x 842 pts).
+Après une modification, vérifier aussi le journal LaTeX, les liens du
+sommaire et l'absence de débordements ou de pages presque vides.
+La pagination peut changer avec les fontes, le moteur ou le contenu :
+ne pas présumer que toute version modifiée conservera 100 pages.
+
+PÉRIMÈTRE
+
+Référence du code étudié : commit ae314c6.
+Les scripts Python et leurs tests ne sont pas modifiés par ce manuel.
+Les commandes Python imprimées sont des ateliers à exécuter par le lecteur,
+pas une affirmation qu'un entraînement ou un benchmark a été effectué
+pendant la rédaction. Les exemples calculés servent à comprendre les
+opérations et ne prétendent pas reproduire les sorties d'un modèle entraîné.

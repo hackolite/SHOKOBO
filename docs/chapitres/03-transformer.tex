@@ -1,0 +1,637 @@
+\fiche{49}{Un identifiant choisit une ligne}{\src{05_model.py}{MiniGPT.token_embedding}}
+\objectif{Passer d'un entier désignant un token à un vecteur entraînable, sans confondre le numéro du token avec une grandeur numérique.}
+
+\notion{Une table d'embeddings est une matrice de paramètres. Elle possède $V$ lignes, une par entrée du vocabulaire, et $D$ colonnes. Le token numéro $i$ sélectionne sa ligne : son identifiant est une adresse, pas une mesure de son sens.}
+
+Dans le constructeur de MiniGPT, \code{nn.Embedding(vocab\_size, embedding\_dim)} crée cette table. Dans \code{forward}, \code{self.token\_embedding(x)} transforme les identifiants entiers de forme $(B,T)$ en nombres réels de forme $(B,T,D)$. La longueur de la séquence ne change pas ; chaque case reçoit maintenant $D$ coordonnées.
+
+On peut comprendre cette sélection avec un vecteur indicateur, aussi appelé \emph{one-hot}. Il contient $V$ coordonnées, toutes nulles sauf celle d'indice $i$, égale à un. Si $E$ désigne la table, alors
+\[
+ e_i=(0,\ldots,1,\ldots,0),\qquad h_i=e_iE=E_{i,:}.
+\]
+Le produit matriciel sélectionne exactement la même ligne. PyTorch n'a toutefois pas besoin de fabriquer tous ces zéros : l'accès indexé exprime directement l'opération voulue. Cette équivalence sert à comprendre les mathématiques, pas à recommander une implémentation plus volumineuse.
+
+Par exemple, prenons une table pédagogique dont les trois lignes sont $(1,0)$, $(0,2)$ et $(-1,3)$. La séquence d'identifiants $(2,0,2)$ devient $((-1,3),(1,0),(-1,3))$. Deux occurrences du même identifiant donnent ici le même vecteur. Elles pourront devenir différentes après l'ajout des positions et le passage dans les blocs.
+
+La table contient $VD$ paramètres, indépendamment de $B$ et de $T$. Pendant l'apprentissage, les occurrences d'un même token contribuent à la modification d'une seule ligne partagée. Ce partage n'implique pas que deux tokens voisins dans la liste aient des embeddings voisins : l'ordre du vocabulaire reste conventionnel.
+
+\attention{Un embedding n'est pas une probabilité : ses coordonnées peuvent être négatives et leur somme n'est pas imposée. Il est appris avec le reste du modèle, sans dictionnaire sémantique fourni à l'avance.}
+
+\exercice{Pour $V=23$, $D=16$, $B=2$ et $T=8$, combien la table contient-elle de paramètres ? Quelle est la forme obtenue ? Deux tokens identiques de deux fenêtres différentes utilisent-ils deux lignes distinctes ?}
+
+\corrige{La table contient $23\times16=368$ paramètres et la sortie a la forme $(2,8,16)$, soit 256 nombres. Ces nombres sont des activations, pas 256 paramètres supplémentaires. Les tokens identiques consultent la même ligne, quelle que soit leur fenêtre ; seule leur utilisation ultérieure peut différencier leurs représentations.}
+
+\fiche{50}{Ajouter des positions apprises}{\src{05_model.py}{MiniGPT.position_embedding}}
+\objectif{Comprendre pourquoi MiniGPT ajoute une information de position et comment une table unique est partagée entre toutes les fenêtres d'un lot.}
+
+\notion{La table des tokens ne distingue pas les occurrences d'un même identifiant. En mode \code{learned}, une seconde table contient une ligne par position autorisée. Son rôle est de fournir au réseau une information sur la place occupée dans la fenêtre.}
+
+Le constructeur crée \code{nn.Embedding(context\_length, embedding\_dim)}. Cette table possède $C$ lignes de dimension $D$, donc $CD$ paramètres. Sans cache, les positions sont les entiers de zéro à $T-1$. L'appel à \code{unsqueeze(0)} leur donne la forme $(1,T)$ ; la table produit alors un tenseur $(1,T,D)$.
+
+Les embeddings de tokens ont, eux, la forme $(B,T,D)$. L'addition utilise le \emph{broadcasting} : la dimension initiale égale à un est compatible avec les $B$ fenêtres. Toutes reçoivent les mêmes vecteurs positionnels aux mêmes indices, sans créer $B$ tables de paramètres distinctes.
+\[
+ h_{b,t,:}=E_{x_{b,t},:}+P_{t,:},
+ \qquad (B,T,D)+(1,T,D)\longrightarrow(B,T,D).
+\]
+La somme, et non la concaténation, conserve une largeur $D$. Par exemple, un token représenté par $(1,2)$, placé à une position représentée par $(3,-1)$, fournit $(4,1)$. À une autre position de vecteur $(0,2)$, le même token fournit $(1,4)$. Le réseau reçoit ainsi des vecteurs différents avant toute attention.
+
+Le code applique ensuite le dropout à cette somme. En évaluation, ce dropout est désactivé. En entraînement, il peut masquer certaines coordonnées ; il n'efface pas des entrées de la table elle-même. Avec un cache contenant déjà $p$ tokens, les nouvelles positions commencent à $p$, pas à zéro.
+
+\attention{En mode \code{rope}, \code{position\_embedding} vaut \code{None}. MiniGPT n'ajoute alors aucune table de positions : les rotations des requêtes et des clés fournissent une autre organisation positionnelle. Dans les deux modes, le contrat du modèle conserve la limite $C$.}
+
+\exercice{Une table utilise $C=8$ et $D=16$. Un cache contient trois tokens et l'entrée nouvelle en contient deux, pour $B=2$. Donnez les indices positionnels, la forme des positions encodées et le nombre de paramètres positionnels.}
+
+\corrige{Les indices sont trois et quatre. Après lookup, les positions ont la forme $(1,2,16)$, diffusée sur les deux fenêtres lors de l'addition. La table complète contient $8\times16=128$ paramètres, même si cet appel n'en consulte que deux lignes. La longueur totale cinq reste inférieure à huit.}
+
+\fiche{51}{Requêtes, clés et valeurs : trois projections}{\src{03_attention.py}{MultiHeadSelfAttention.q_proj}}
+\objectif{Donner un sens opérationnel aux lettres $Q$, $K$ et aux valeurs, sans attribuer au réseau des intentions humaines.}
+
+\notion{Une projection linéaire transforme chaque vecteur de dimension $D$ en un autre vecteur. Ici, les couches \code{q\_proj}, \code{k\_proj} et \code{v\_proj} sont trois applications affines indépendantes, appliquées au même tenseur d'entrée.}
+
+Le mot \emph{requête} désigne le vecteur utilisé du côté de la position qui reçoit de l'information. Une \emph{clé} désigne le vecteur avec lequel cette requête est comparée. Une \emph{valeur} désigne le contenu numérique ensuite combiné. Ce vocabulaire décrit trois rôles dans un calcul ; il n'affirme pas qu'un token pose consciemment une question.
+
+Pour une représentation ligne $x_t$, on peut écrire, en respectant le stockage des poids de \code{nn.Linear},
+\[
+ q_t=x_tW_Q^\top+b_Q,\qquad
+ k_t=x_tW_K^\top+b_K,\qquad
+ v_t=x_tW_{\mathrm{val}}^\top+b_{\mathrm{val}}.
+\]
+Chaque matrice de poids a la forme $(D,D)$, chaque biais possède $D$ coordonnées. Les mêmes paramètres sont utilisés à toutes les positions et pour toutes les fenêtres. Les trois résultats ont initialement la forme $(B,T,D)$ ; leur séparation en têtes vient ensuite.
+
+Pour une expérience de pensée, fixons les trois matrices à l'identité et leurs biais à zéro. On obtient trois copies de l'entrée. Cela permet de suivre les opérations, mais ce n'est pas l'initialisation du dépôt. Les matrices réellement entraînables peuvent sélectionner des combinaisons de coordonnées très différentes.
+
+Les valeurs ne servent pas directement à calculer les scores de compatibilité : ceux-ci utilisent les requêtes et les clés. Inversement, les clés ne sont pas directement moyennées pour fabriquer la sortie ; ce sont les valeurs qui le sont. Séparer ces rôles donne au réseau davantage de liberté qu'un simple moyennage des embeddings d'entrée.
+
+\attention{Les lettres ne désignent pas trois séquences de tokens différentes. Dans cette auto-attention, les trois projections partent du même tenseur. Pour éviter une ambiguïté, nous noterons $V_{\mathrm{att}}$ la matrice des valeurs, et réserverons $V$ à la taille du vocabulaire.}
+
+\exercice{Avec $D=4$, comptez les paramètres des trois projections, biais compris. Si $x_t$ est nul, les trois résultats sont-ils nécessairement nuls après apprentissage ?}
+
+\corrige{Chaque projection contient $4\times4+4=20$ paramètres, donc 60 au total. Pour une entrée nulle, les sorties sont les biais respectifs. Ceux-ci sont initialisés à zéro par MiniGPT, mais restent entraînables : des sorties non nulles sont donc possibles après apprentissage.}
+
+\fiche{52}{Construire la grille des scores}{\src{03_attention.py}{scaled_dot_product_attention}}
+\objectif{Lire le produit $QK^\top$ comme une grille de comparaisons, en identifiant précisément ses axes et ses sommes.}
+
+\notion{Un score est un produit scalaire entre une requête et une clé. La ligne indique la position qui reçoit l'information ; la colonne indique la position susceptible d'en fournir. À ce stade, le score n'est pas une probabilité.}
+
+Pour une tête, chaque requête possède $d_k$ coordonnées. Le produit scalaire multiplie les coordonnées correspondantes puis les additionne. Avec $T$ requêtes et $T$ clés, cette opération remplit une matrice carrée :
+\[
+ S_{ij}=\sum_{r=0}^{d_k-1}q_{i,r}k_{j,r},
+ \qquad (T,d_k)(d_k,T)\longrightarrow(T,T).
+\]
+La transposition de $K$ rend les dimensions internes compatibles. Sans elle, le produit matriciel demandé n'aurait généralement pas de sens. Le code utilise \code{k.transpose(-2, -1)} : seuls les deux derniers axes sont échangés, pas ceux du lot ou des têtes.
+
+Dans le modèle multi-têtes, $Q$ et $K$ ont la forme $(B,H,T,d_k)$. PyTorch réalise le produit séparément pour chaque fenêtre et chaque tête. Il obtient $(B,H,T,T)$ ; les fenêtres d'un lot ne s'échangent donc aucune information. Les têtes ne sont pas non plus mélangées lors de ce produit.
+
+Prenons $q_i=(2,-1)$ et deux clés $(1,3)$ et $(-2,0)$. Les scores valent respectivement $2-3=-1$ et $-4+0=-4$. Le premier score est plus grand, bien qu'il soit négatif. Le softmax dépendra de leur différence ; le signe négatif n'interdit pas qu'une position reçoive un poids important.
+
+Avec un cache de longueur $p$, seules les nouvelles requêtes sont calculées pour cet appel, tandis que les clés anciennes sont concaténées aux nouvelles. La grille devient rectangulaire, de forme $(B,H,T,p+T)$. Ce changement de forme explique pourquoi un simple triangle carré n'est plus toujours le bon masque.
+
+\attention{Le calcul construit toutes les comparaisons avant de masquer le futur dans le chemin manuel. Le masque ne supprime donc pas ce coût de construction. Sans cache, la grille de scores contient $BHT^2$ nombres, une croissance quadratique en longueur.}
+
+\exercice{Pour $B=2$, $H=4$, $T=8$ et $d_k=4$, donnez la forme des scores et leur nombre d'éléments. Que devient ce nombre si $T$ double ?}
+
+\corrige{La forme est $(2,4,8,8)$, soit $2\times4\times64=512$ scores. Avec seize positions, on obtient $2\times4\times256=2048$ scores. Doubler les deux axes positionnels multiplie le nombre par quatre, sans changer le nombre de paramètres appris.}
+
+\fiche{53}{L'exemple minuscule, sans masque}{\src{03_attention.py}{tiny_numeric_example}}
+\objectif{Refaire exactement le calcul présenté dans le script, en conservant des expressions exactes plutôt que des décimales approximatives.}
+
+\notion{La fonction \code{tiny\_numeric\_example} appelle l'attention sans fournir de masque. Les deux positions peuvent donc utiliser les deux valeurs. Cette démonstration numérique n'est pas, à elle seule, une attention causale de modèle de langage.}
+
+Le script crée un lot de taille un contenant deux requêtes, deux clés et deux valeurs. En omettant seulement cet axe de lot dans l'écriture, les données et les scores divisés sont
+\[
+ Q=\begin{pmatrix}1&0\\0&1\end{pmatrix},\quad
+ K=\begin{pmatrix}1&1\\1&0\end{pmatrix},\quad
+ V_{\mathrm{att}}=\begin{pmatrix}10&0\\0&5\end{pmatrix},\quad
+ \frac{QK^\top}{\sqrt2}=
+ \begin{pmatrix}a&a\\a&0\end{pmatrix},
+ \quad a=\frac1{\sqrt2}.
+\]
+La première requête sélectionne la première coordonnée des clés : elle produit deux scores identiques. La seconde sélectionne leur deuxième coordonnée : elle distingue donc les deux clés. La division utilise $\sqrt2$, puisque les requêtes ont deux coordonnées.
+
+Le softmax s'applique séparément à chaque ligne. Dans la première, les deux exponentielles sont égales, donc les poids valent exactement une moitié. Dans la seconde, posons $r=e^a/(e^a+1)$. Comme $a$ est positif, $r$ dépasse une moitié, mais reste inférieur à un.
+\[
+ A=\begin{pmatrix}\tfrac12&\tfrac12\\r&1-r\end{pmatrix},
+ \qquad
+ AV_{\mathrm{att}}=
+ \begin{pmatrix}5&\tfrac52\\10r&5(1-r)\end{pmatrix}.
+\]
+Les coordonnées de sortie sont obtenues par deux moyennes pondérées distinctes, utilisant les mêmes poids sur chaque coordonnée. Par exemple, la première coordonnée de la seconde sortie vaut $r\times10+(1-r)\times0$. Aucun arrondi n'est nécessaire pour vérifier cette relation.
+
+La fonction renvoie trois objets dans cet ordre : sortie, poids, scores divisés éventuellement masqués. Ses affichages permettent ainsi de remonter du résultat aux étapes intermédiaires. Il faut distinguer cet ordre de retour du module multi-têtes, qui ne renvoie pas les scores.
+
+\attention{Le softmax de toute la matrice aplatie donnerait un autre résultat : il ferait partager une seule somme égale à un entre toutes les cases. Ici, chacune des deux lignes possède sa propre normalisation.}
+
+\exercice{Remplaçons seulement les deux valeurs par $(4,2)$ et $(4,2)$. Les poids changent-ils ? Calculez les deux sorties sans recalculer les exponentielles.}
+
+\corrige{Les poids restent identiques, car ils dépendent seulement de $Q$ et $K$. Chaque ligne combine maintenant deux vecteurs égaux avec des coefficients dont la somme vaut un. Les deux sorties valent donc exactement $(4,2)$, même si leurs distributions d'attention diffèrent.}
+
+\fiche{54}{Interdire le futur avant le softmax}{\src{03_attention.py}{causal_mask}}
+\objectif{Construire le masque causal et comprendre pourquoi il intervient avant la normalisation, pas après.}
+
+\notion{À la position $i$, MiniGPT peut utiliser les positions $j\leq i$. La position courante est autorisée, car le token fourni à cet endroit sert à prédire le suivant. Seules les colonnes strictement futures sont interdites.}
+
+La fonction \code{causal\_mask} construit un triangle supérieur avec \code{diagonal=1}, puis le convertit en booléens. Dans le chemin manuel, \code{True} signifie \emph{interdit}. Le score correspondant est remplacé par $-\infty$ avant le softmax ; son exponentielle vaut alors zéro.
+\[
+ M_{ij}=(j>i),\qquad
+ M=\begin{pmatrix}
+ \mathrm{F}&\mathrm{V}&\mathrm{V}\\
+ \mathrm{F}&\mathrm{F}&\mathrm{V}\\
+ \mathrm{F}&\mathrm{F}&\mathrm{F}
+ \end{pmatrix}
+ \quad(T=3),
+\]
+où $\mathrm{V}$ signifie vrai et $\mathrm{F}$ faux. La première position ne peut donc utiliser qu'elle-même ; la deuxième peut utiliser les deux premières. Aucune ligne n'est entièrement interdite dans ce masque carré.
+
+Reprenons exactement les données de la fiche précédente, mais fournissons cette fois le masque causal de taille deux. Le score en haut à droite devient $-\infty$. Avec les mêmes $a=1/\sqrt2$ et $r=e^a/(e^a+1)$, on obtient
+\[
+ S_{\text{masqué}}=\begin{pmatrix}a&-\infty\\a&0\end{pmatrix},
+ \quad A=\begin{pmatrix}1&0\\r&1-r\end{pmatrix},
+ \quad O=\begin{pmatrix}10&0\\10r&5(1-r)\end{pmatrix}.
+\]
+Seule la première sortie change. Cette observation constitue une vérification locale de causalité : la valeur future ne participe plus à son calcul. Elle ne prétend pas que tout programme utilisant cette fonction sera automatiquement correct.
+
+Masquer les poids après le softmax, sans les renormaliser, laisserait ici une première ligne $(1/2,0)$. Sa somme serait une moitié, et la sortie $(5,0)$ serait erronée. Le placement du masque garantit que toute la masse est redistribuée sur les positions autorisées.
+
+Le même masque est diffusé sur les fenêtres et les têtes : il décrit une règle temporelle commune, pas un ensemble de paramètres que chaque tête devrait apprendre à respecter.
+
+\attention{La fonction générale accepte un masque fourni par l'appelant. Une ligne entièrement masquée peut produire des valeurs non numériques : aucune distribution ne peut normaliser uniquement des exponentielles nulles. La convention booléenne de SDPA sera différente.}
+
+\exercice{Un cache contient trois positions et l'appel ajoute deux tokens. Pour les requêtes globales trois et quatre, quelles colonnes parmi zéro à quatre sont interdites ?}
+
+\corrige{La requête trois interdit seulement la colonne quatre. La requête quatre n'interdit aucune colonne. Le masque manuel rectangulaire a donc les lignes $(\mathrm{F},\mathrm{F},\mathrm{F},\mathrm{F},\mathrm{V})$ et cinq fois faux. Le décalage du cache est indispensable pour obtenir ces autorisations.}
+
+\fiche{55}{Pourquoi diviser par la racine de la dimension ?}{\src{03_attention.py}{scaled_dot_product_attention}}
+\objectif{Relier le facteur $1/\sqrt{d_k}$ à un calcul de variance accessible, en explicitant les hypothèses qui le rendent valable.}
+
+\notion{Un produit scalaire additionne $d_k$ contributions. Même si chaque contribution reste modérée, la dispersion de la somme tend à augmenter avec le nombre de coordonnées. La division réduit cette dépendance à la largeur des têtes.}
+
+Faisons un modèle probabiliste simplifié, pas une description exacte des activations entraînées. Supposons les coordonnées des requêtes et des clés indépendantes, centrées, de variance un ; supposons aussi les produits de coordonnées indépendants entre eux. Alors chaque produit $q_rk_r$ est centré et sa variance vaut un.
+\[
+ S=\sum_{r=0}^{d_k-1}q_rk_r,\qquad
+ \operatorname{Var}(S)=d_k,\qquad
+ \operatorname{Var}\!\left(\frac{S}{\sqrt{d_k}}\right)=1.
+\]
+La dernière égalité utilise une règle simple : multiplier une variable par un nombre multiplie sa variance par le carré de ce nombre. L'écart-type de $S$ vaut donc $\sqrt{d_k}$, et non $d_k$. C'est ce qui motive la racine au dénominateur.
+
+Pourquoi la dispersion des scores importe-t-elle ? Le softmax compare des exponentielles. Pour deux scores dont la différence vaut $\Delta$, le rapport des poids vaut $e^\Delta$. Une différence importante peut concentrer presque tout le poids sur une seule case, même au début de l'apprentissage. La division modère cet effet ; elle ne garantit pas une attention uniforme.
+
+Avec $d_k=4$, le code divise par deux. Avec $d_k=64$, il divise par huit. Si deux scores bruts diffèrent de huit, les rapports de poids après division sont respectivement $e^4$ et $e^1$. Ces expressions exactes suffisent à comparer leur concentration sans annoncer une mesure expérimentale.
+
+Dans le code, \code{d\_k = q.size(-1)} lit la dimension réellement présente, puis \code{math.sqrt(d\_k)} calcule le facteur. Cette méthode reste valable pour une tête et pour plusieurs têtes déjà séparées.
+
+\attention{Après projection et apprentissage, les coordonnées peuvent être corrélées et leurs variances différentes de un. La démonstration explique une règle de mise à l'échelle ; elle ne prouve pas que tous les scores réels ont une variance exactement égale à un.}
+
+\exercice{Sous les hypothèses précédentes, prenons $d_k=16$. Quelle variance obtiendrait-on en divisant par seize au lieu de quatre ? Pourquoi serait-ce une autre règle ?}
+
+\corrige{La variance brute vaut seize. Diviser par seize donnerait $16/16^2=1/16$, tandis que diviser par quatre donne un. La première règle réduit de plus en plus la dispersion quand la dimension augmente ; elle ne cherche donc pas la même stabilité d'échelle.}
+
+\fiche{56}{Les poids combinent les valeurs}{\src{03_attention.py}{scaled_dot_product_attention}}
+\objectif{Interpréter le produit final comme une moyenne pondérée de vecteurs et identifier les limites exactes de cette interprétation.}
+
+\notion{Après masquage et softmax, les poids d'une ligne sont positifs ou nuls et leur somme vaut un, à l'arrondi numérique près. La sortie correspondante est une combinaison convexe des valeurs autorisées.}
+
+Le terme \emph{convexe} signifie ici que les coefficients forment une moyenne : aucune valeur n'est multipliée par un coefficient négatif et la masse totale vaut un. Si $A$ contient les poids et $V_{\mathrm{att}}$ les valeurs, le code réalise
+\[
+ O=AV_{\mathrm{att}},\qquad
+ o_i=\sum_j A_{ij}v_j,\qquad
+ A_{ij}\geq0,\quad \sum_j A_{ij}=1.
+\]
+Toutes les coordonnées d'un vecteur utilisent la même ligne de poids. On ne choisit donc pas indépendamment une position source pour chaque coordonnée. Cette contrainte maintient le résultat dans l'ensemble des mélanges possibles des vecteurs sources.
+
+Pour deux valeurs $(10,0)$ et $(0,5)$, des poids $(1/4,3/4)$ donnent $(5/2,15/4)$. La première coordonnée reste entre zéro et dix ; la seconde entre zéro et cinq. Plus généralement, chaque coordonnée de la sortie se situe entre le minimum et le maximum de cette coordonnée parmi les valeurs autorisées.
+
+Cependant, cette propriété porte sur les valeurs \emph{projetées} et sur la sortie d'une tête avant les opérations suivantes. Elle ne dit pas que la sortie finale du bloc reste entre les embeddings initiaux. La projection de sortie, son biais, la connexion résiduelle, la normalisation et le réseau feed-forward modifient ensuite le vecteur.
+
+Elle ne signifie pas non plus que l'attention calcule une probabilité de vérité. Les poids organisent un mélange interne. Deux distributions différentes peuvent produire le même mélange, notamment lorsque les valeurs sont identiques. Une carte d'attention ne suffit donc pas à expliquer toutes les causes d'une prédiction.
+
+\attention{Dans cette implémentation, aucun dropout n'est appliqué aux poids du softmax. Le dropout arrive après la fusion des têtes. Une variante appliquant du dropout aux probabilités ne conserverait pas nécessairement une somme égale à un pour chaque réalisation aléatoire.}
+
+\exercice{Deux valeurs scalaires valent $-2$ et $6$. Peut-on obtenir dix par cette moyenne ? Trouvez les poids donnant quatre, puis expliquez comment une projection ultérieure peut néanmoins produire dix.}
+
+\corrige{Dix est hors de l'intervalle $[-2,6]$, donc impossible à ce stade. Les poids $1/4$ et $3/4$ donnent $-2/4+18/4=4$. Une transformation affine ultérieure telle que $z\mapsto2z+2$ transforme quatre en dix : la borne ne survit pas à toutes les opérations du module.}
+
+\fiche{57}{Découper les coordonnées en têtes}{\src{03_attention.py}{MultiHeadSelfAttention.forward}}
+\objectif{Suivre les opérations \code{view} et \code{transpose} sans confondre découpage des coordonnées et découpage de la séquence.}
+
+\notion{Les têtes traitent les mêmes positions, mais utilisent des groupes différents de coordonnées projetées. Chaque tête calcule sa propre grille de scores et ses propres mélanges de valeurs.}
+
+MiniGPT exige que $D$ soit divisible par $H$. La dimension d'une tête vaut $d_k=D/H$. Chaque projection produit d'abord $(B,T,D)$, puis le code réorganise les deux derniers axes :
+\[
+ (B,T,D)\xrightarrow{\texttt{view}}(B,T,H,d_k)
+ \xrightarrow{\texttt{transpose}(1,2)}(B,H,T,d_k).
+\]
+Ces opérations ne créent pas de nouveaux paramètres et ne calculent pas de moyennes. Elles changent la manière d'interpréter et de parcourir les coordonnées déjà présentes. La transposition met l'axe des têtes avant celui des positions pour que les produits matriciels utilisent les deux derniers axes.
+
+Prenons un token dont le vecteur projeté est $(0,1,2,3,4,5,6,7)$ avec $D=8$ et $H=4$. Les quatre têtes reçoivent respectivement $(0,1)$, $(2,3)$, $(4,5)$ et $(6,7)$. Chacune reçoit ce découpage pour \emph{tous} les tokens, pas seulement pour un quart de la fenêtre.
+
+Les projections sont apprises avant le découpage. Une coordonnée attribuée à une tête peut donc dépendre de toutes les coordonnées de l'entrée, grâce à la matrice dense. Il serait trompeur de penser que la première tête ne voit que les premiers caractères ou seulement les premières coordonnées de l'embedding initial.
+
+Le nombre de paramètres des trois projections reste $3(D^2+D)$ quand on change uniquement $H$. En revanche, le nombre de grilles de scores augmente avec les têtes, tandis que leur dimension interne diminue. Des têtes supplémentaires ne constituent donc pas une multiplication indépendante de toute la largeur du modèle.
+
+\attention{Les paramètres positifs doivent être des entiers véritables : le constructeur rejette notamment les booléens. En mode RoPE, une contrainte supplémentaire impose que $d_k$ soit pair, car les coordonnées seront utilisées par paires.}
+
+\exercice{L'entrée a la forme $(2,6,8)$ et l'on choisit quatre têtes. Donnez les formes de $Q$ après chaque réorganisation et des poids d'attention. Peut-on choisir trois têtes sans modifier $D$ ?}
+
+\corrige{Après \code{view}, la forme est $(2,6,4,2)$ ; après transposition, $(2,4,6,2)$. Les poids ont la forme $(2,4,6,6)$. Trois têtes sont refusées, car huit n'est pas divisible par trois : aucun découpage en groupes de taille entière identique n'existe.}
+
+\fiche{58}{Fusionner puis projeter : l'ordre exact}{\src{03_attention.py}{MultiHeadSelfAttention.out_proj}}
+\objectif{Reconstituer la sortie multi-têtes et localiser précisément le dropout de cette implémentation.}
+
+\notion{Après le produit des poids par les valeurs, la sortie possède la forme $(B,H,T,d_k)$. La fusion remet côte à côte les vecteurs des têtes appartenant au même token, afin de retrouver une largeur $D$.}
+
+Le code transpose d'abord les axes des têtes et des positions. Il obtient une vue de forme $(B,T,H,d_k)$. Cette vue peut parcourir la mémoire dans un ordre non contigu. L'appel \code{contiguous()} garantit alors une disposition compatible avec le \code{view} final, qui rassemble les deux derniers axes.
+\begin{lstlisting}
+output = output.transpose(1, 2).contiguous().view(
+    batch_size, sequence_length, self.embedding_dim
+)
+output = self.out_proj(self.dropout(output))
+\end{lstlisting}
+Ces lignes reformattent l'extrait du dépôt sans changer son ordre. La concaténation implicite ne somme pas les têtes : avec deux sorties $(1,2)$ et $(3,4)$, le vecteur fusionné est $(1,2,3,4)$. La projection de sortie peut ensuite mélanger toutes ces coordonnées.
+
+Point essentiel : le dropout arrive \emph{avant} \code{out\_proj}. Pour un taux $\rho$ strictement inférieur à un, l'entraînement conserve aléatoirement certaines coordonnées et les multiplie par $1/(1-\rho)$. En évaluation, le module dropout restitue son entrée. Le biais de la projection est ajouté après ce masquage.
+\[
+ y=\operatorname{Linear}_{\mathrm{out}}
+       \bigl(\operatorname{Dropout}(z)\bigr),
+ \qquad z\in\mathbb{R}^{B\times T\times D}.
+\]
+Déplacer le dropout après la projection conserve les formes, mais change généralement le résultat. Avant projection, supprimer une coordonnée peut modifier plusieurs coordonnées de sortie. Après projection, supprimer une coordonnée de sortie ne retire pas de la même façon sa contribution aux autres.
+
+Cette distinction concerne aussi les comparaisons entre chemins manuel et SDPA : conserver la place du dropout permet de comparer la même architecture, plutôt que deux architectures presque semblables.
+
+\attention{La fusion ne produit pas encore la sortie du bloc Transformer. Le bloc doit ajouter l'entrée résiduelle puis normaliser. Ici, \code{out\_proj} possède une matrice $(D,D)$ et un biais de longueur $D$, soit $D^2+D$ paramètres.}
+
+\exercice{Prenons $z=(2,4)$, un dropout de taux une moitié qui conserve seulement la première coordonnée, puis la projection $y=(z_1+z_2,z_1-z_2)$ sans biais. Calculez la sortie.}
+
+\corrige{Le dropout fournit $(4,0)$, car la coordonnée conservée est doublée. La projection produit donc $(4,4)$. Sans dropout, elle aurait fourni $(6,-2)$. Appliquer ensuite le même motif de dropout à cette autre sortie aurait donné $(12,0)$, résultat différent.}
+
+\fiche{59}{Auditer le parcours de l'attention}{\src{03_attention.py}{MultiHeadSelfAttention.forward}}
+\objectif{Lire un \code{forward} comme un contrat de transformations et de retours, plutôt que comme une suite opaque d'instructions.}
+
+\notion{Le résultat dépend de trois choix distincts : l'encodage positionnel, le moteur de calcul de l'attention et la demande éventuelle de cache ou de poids. Ces choix doivent être suivis sans perdre les axes des tenseurs.}
+
+Partons d'une entrée $(B,T,D)$. Les trois projections et le découpage produisent des requêtes, clés et valeurs $(B,H,T,d_k)$. Si un cache est fourni, ses caractéristiques sont vérifiées. En mode RoPE, les requêtes et les nouvelles clés sont tournées avec le décalage approprié. Les anciennes clés, déjà tournées, sont ensuite concaténées aux nouvelles, comme les valeurs.
+
+Le masque dépend de la présence d'un passé non vide. Sans passé, il est causal carré ; avec un passé de longueur $p$, il autorise les clés dont la position globale ne dépasse pas celle de la requête. Le calcul donne une sortie par tête, puis fusion, dropout et projection rendent $(B,T,D)$.
+\[
+ \text{sortie}:(B,T,D),\qquad
+ \text{poids}:(B,H,T,p+T),\qquad
+ K_{\text{présent}},V_{\text{présent}}:(B,H,p+T,d_k).
+\]
+Ces formes rendent les retours faciles à vérifier. Sans option, le module renvoie seulement la sortie. Avec \code{return\_attention=True}, il renvoie sortie puis poids. Avec \code{use\_cache=True}, il renvoie sortie puis paire clé-valeur. Avec les deux options, l'ordre est sortie, poids, paire clé-valeur.
+
+Demander les poids force le chemin manuel, même si \code{attention\_backend} vaut \code{'sdpa'}. La branche SDPA utilisée ici ne fournit pas ces poids. Le choix explicite permet donc de les inspecter, mais peut changer les calculs intermédiaires et leur coût mémoire.
+
+Consommer un cache et demander son retour sont également deux décisions différentes. Le paramètre \code{past\_key\_value} fournit le passé ; \code{use\_cache} décide si le passé enrichi doit être rendu.
+
+\attention{L'option \code{return\_attention} appartient au module d'attention. Ni \code{TransformerBlock.forward} ni \code{MiniGPT.forward} ne l'exposent directement. Ne supposez pas qu'un argument accepté à un niveau traverse automatiquement tous les autres.}
+
+\exercice{On appelle une attention en évaluation avec $B=2$, $H=4$, $D=16$, deux nouveaux tokens et trois tokens en cache, en demandant poids et cache. Combien d'objets sont renvoyés, et de quelles formes ?}
+
+\corrige{Trois objets sont renvoyés : la sortie $(2,2,16)$, les poids $(2,4,2,5)$, puis une paire dont chaque tenseur vaut $(2,4,5,4)$. Le dernier objet contient deux tenseurs, mais reste un seul élément du tuple principal. Les deux nouvelles requêtes ont accès à cinq clés au maximum.}
+
+\fiche{60}{Le réseau feed-forward et GELU}{\src{04_transformer.py}{FeedForward}}
+\objectif{Comprendre le calcul effectué à chaque position après l'attention et donner une première lecture probabiliste de GELU.}
+
+\notion{Le réseau feed-forward transforme les coordonnées d'un token sans mélanger directement les positions. Les mêmes deux couches affines et la même activation sont appliquées à chaque vecteur de la séquence.}
+
+Le premier \code{nn.Linear} transforme une largeur $D$ en une largeur $F$. GELU agit séparément sur chacune de ces $F$ coordonnées. Le second \code{nn.Linear} ramène la largeur à $D$, puis le dropout est appliqué. C'est exactement l'ordre du \code{nn.Sequential} du dépôt.
+\[
+ u=xW_1^\top+b_1,\qquad
+ \operatorname{FFN}(x)=
+ \operatorname{Dropout}\!\left(\operatorname{GELU}(u)W_2^\top+b_2\right).
+\]
+Pourquoi insérer une activation ? Sans elle, la composition de deux applications affines resterait affine. Augmenter la dimension intermédiaire ne suffirait pas à créer la non-linéarité attendue. GELU introduit une réponse qui dépend autrement de la valeur de chaque coordonnée.
+
+Pour la comprendre, imaginons une variable aléatoire $Z$ suivant une loi normale centrée réduite, la courbe en cloche de moyenne zéro et d'écart-type un. Notons $\Phi(u)$ la probabilité que $Z$ soit inférieur ou égal à $u$. Alors
+\[
+ \operatorname{GELU}(u)=u\Phi(u),\qquad \Phi(0)=\tfrac12.
+\]
+Le coefficient $\Phi(u)$ est compris entre zéro et un : les grandes valeurs positives sont peu atténuées, les valeurs très négatives le sont beaucoup. Cette lecture ne signifie pas que GELU tire une variable aléatoire à chaque appel ; l'activation elle-même est déterministe.
+
+Par symétrie de la loi normale, $\Phi(-u)=1-\Phi(u)$. On en déduit notamment que GELU peut produire des valeurs négatives, contrairement à une activation qui remplacerait toutes les entrées négatives par zéro. Elle ne transforme pas non plus le vecteur complet en distribution de probabilités.
+
+\attention{Le dropout de ce FFN se trouve après la deuxième couche linéaire, et non entre les deux couches. Les exemples classiques d'autres bibliothèques ne remplacent pas la lecture de cette séquence précise.}
+
+\exercice{Pour $D=16$ et $F=32$, comptez les paramètres du FFN, biais compris. Puis, en posant $\Phi(1)=p$, exprimez GELU en un et en moins un.}
+
+\corrige{La première couche possède $16\times32+32=544$ paramètres ; la seconde $32\times16+16=528$, soit 1072 au total. GELU et le dropout n'ajoutent aucun paramètre. Les activations demandées valent $p$ et $-(1-p)$. Leur différence vaut exactement un, sans qu'il soit nécessaire de connaître une approximation décimale de $p$.}
+
+\fiche{61}{La connexion résiduelle et le gradient}{\src{04_transformer.py}{TransformerBlock.forward}}
+\objectif{Comprendre ce que change l'addition d'une entrée à sa transformation, puis distinguer cet avantage de ses limites dans un bloc post-normalisé.}
+
+\notion{Une connexion résiduelle additionne deux tenseurs de même forme. Elle permet à une sous-couche d'apprendre une modification de la représentation plutôt qu'un remplacement complet de celle-ci.}
+
+Le bloc calcule d'abord \code{x + attn\_output}, puis, après normalisation, \code{x + ffn\_output}. Les sorties d'attention et de FFN ont donc nécessairement la même largeur $D$ que le chemin qui les contourne. Aucune concaténation n'a lieu : la largeur reste inchangée.
+
+Pour saisir le rôle de l'addition dans la rétropropagation, prenons un cas scalaire sans normalisation. Si $f$ est une fonction dérivable et si $\ell$ mesure une erreur en sortie, alors
+\[
+ y=x+f(x),\qquad
+ \frac{dy}{dx}=1+f'(x),\qquad
+ \frac{d\ell}{dx}=\frac{d\ell}{dy}\bigl(1+f'(x)\bigr).
+\]
+Le terme un vient du chemin direct. Si la dérivée de $f$ est petite, ce chemin peut conserver une contribution que la seule composition de nombreuses transformations aurait fortement réduite. Pour des vecteurs, le rôle du nombre un est joué par l'identité.
+
+Un exemple élémentaire suffit : avec $f(x)=0{,}1x$, la transformation seule multiplie localement les variations par $0{,}1$, tandis que la transformation résiduelle les multiplie par $1{,}1$. Il s'agit d'une comparaison locale, pas d'une promesse que multiplier de nombreux facteurs $1{,}1$ serait toujours souhaitable.
+
+Dans MiniGPT, la normalisation intervient après l'addition. Le résultat réel est donc $\operatorname{LayerNorm}(x+f(x))$. Le gradient traverse aussi cette normalisation ; on ne peut pas considérer que le bloc entier possède un passage identité totalement intact.
+
+\attention{Les résidus ne garantissent ni l'absence de gradients nuls ni la stabilité universelle. Si $f'(x)=-1$ dans l'exemple scalaire, la dérivée de la somme est nulle. Leur utilité tient à la structure de calcul qu'ils offrent, pas à une impossibilité mathématique d'échouer.}
+
+\exercice{Une représentation vaut $(1,2)$ et la sous-couche produit $(3,-1)$. Quelle somme entre dans la normalisation ? Si la sous-couche produit plutôt zéro partout, le résultat final du bloc est-il nécessairement l'entrée ?}
+
+\corrige{La somme vaut $(4,1)$. Avec une sortie de sous-couche nulle, la somme vaut bien $(1,2)$, mais la LayerNorm qui suit transforme généralement ce vecteur. Ainsi, sous-couche nulle ne signifie pas bloc identité dans cette architecture post-normalisée ; il faut lire toute la chaîne, pas seulement le symbole plus.}
+
+\fiche{62}{LayerNorm : normaliser un token}{\src{04_transformer.py}{TransformerBlock.norm_1}}
+\objectif{Calculer une LayerNorm à la main et identifier ses axes, son epsilon et ses paramètres entraînables.}
+
+\notion{Avec \code{nn.LayerNorm(embedding\_dim)}, la moyenne et la variance sont calculées sur les $D$ coordonnées de chaque token. Elles ne sont pas calculées sur toutes les positions ni sur toutes les fenêtres du lot.}
+
+Pour un vecteur $x=(x_1,\ldots,x_D)$, PyTorch utilise une variance dont le diviseur est $D$, parfois appelée variance biaisée dans le vocabulaire statistique. L'objectif est de normaliser les coordonnées présentes, pas d'estimer sans biais une variance inconnue à partir d'un échantillon.
+\[
+ \mu=\frac1D\sum_{r=1}^Dx_r,\qquad
+ \sigma^2=\frac1D\sum_{r=1}^D(x_r-\mu)^2,\qquad
+ y_r=\gamma_r\frac{x_r-\mu}{\sqrt{\sigma^2+\varepsilon}}+\beta_r.
+\]
+Les réglages par défaut utilisés ici donnent $\varepsilon=10^{-5}$. Les vecteurs $\gamma$ et $\beta$, de longueur $D$, sont entraînables : une normalisation possède donc $2D$ paramètres. Initialement, $\gamma$ vaut un et $\beta$ zéro. Les statistiques sont recalculées à chaque passage, aussi en évaluation.
+
+Prenons $x=(1,3)$. Sa moyenne vaut deux et sa variance vaut $((1-2)^2+(3-2)^2)/2=1$. Avant l'affinité finale, les coordonnées deviennent $-1/\sqrt{1+\varepsilon}$ et $1/\sqrt{1+\varepsilon}$. Elles sont proches de moins un et de un, mais pas exactement égales à ces nombres lorsque l'epsilon est conservé.
+
+L'epsilon évite notamment de diviser par zéro pour un vecteur constant. Avec $(3,3)$, la partie centrée est nulle ; la sortie vaut donc $\beta$. La présence de $\gamma$ et $\beta$ signifie aussi que les sorties finales n'ont pas nécessairement moyenne zéro et variance un après apprentissage.
+
+À la différence d'une BatchNorm usuelle, cette LayerNorm ne calcule pas ses statistiques en réunissant plusieurs exemples du lot et ne maintient pas de moyennes courantes pour l'évaluation. Une fenêtre ne modifie donc pas la normalisation d'une autre fenêtre.
+
+Sur un tenseur $(2,8,16)$, on effectue ainsi seize normalisations distinctes, chacune sur seize coordonnées. Les paramètres $\gamma$ et $\beta$ restent pourtant partagés entre ces seize vecteurs : statistiques locales et paramètres communs ne se contredisent pas.
+
+\attention{Remplacer le diviseur $D$ par $D-1$, ou oublier l'epsilon, empêche de reproduire exactement le module. Ces différences deviennent particulièrement visibles quand le nombre de coordonnées est petit ou que leur variance est presque nulle.}
+
+\exercice{Pour $(1,3)$, prenons $\gamma=(2,1)$ et $\beta=(1,-1)$. Donnez la sortie exacte et le nombre de paramètres d'une LayerNorm de largeur seize.}
+
+\corrige{La sortie est $(1-2/\sqrt{1+\varepsilon},\, -1+1/\sqrt{1+\varepsilon})$. Une largeur seize donne seize coefficients multiplicatifs et seize biais, soit 32 paramètres. La moyenne et la variance calculées ne sont pas des paramètres supplémentaires.}
+
+\fiche{63}{Le bloc est post-normalisé}{\src{04_transformer.py}{TransformerBlock}}
+\objectif{Écrire les deux équations du bloc réel et comprendre pourquoi déplacer une normalisation change l'architecture.}
+
+\notion{Dans un bloc post-normalisé, chaque normalisation vient après l'addition résiduelle. MiniGPT suit cet ordre pour l'attention puis pour le réseau feed-forward. Il ne s'agit pas d'un bloc pré-normalisé.}
+
+Notons $\mathcal A$ le module complet d'attention, comprenant fusion des têtes, dropout de sortie et projection. Notons $\mathcal F$ le FFN complet, comprenant son dropout final. Pour l'entrée $X$, les deux étapes du dépôt s'écrivent
+\[
+ U=\operatorname{LN}_1\bigl(X+\mathcal A(X)\bigr),
+ \qquad
+ Y=\operatorname{LN}_2\bigl(U+\mathcal F(U)\bigr).
+\]
+Les tenseurs $X$, $U$ et $Y$ ont tous la forme $(B,T,D)$. La seconde sous-couche reçoit $U$, déjà normalisé après l'attention, et non l'entrée originale $X$. Les deux LayerNorm possèdent leurs propres paramètres.
+
+Un bloc pré-normalisé ferait plutôt apparaître une sous-couche appliquée à une entrée normalisée avant l'addition. Même si les composants portent les mêmes noms et si les formes restent identiques, ces compositions ne sont pas interchangeables : en général, normaliser une somme n'est pas additionner un vecteur à une transformation d'entrée normalisée.
+
+Pour le constater sans calcul compliqué, annulons les deux sorties de sous-couches. Ici, le bloc fournit alors $\operatorname{LN}_2(\operatorname{LN}_1(X))$, généralement différent de $X$. Un schéma pré-normalisé avec deux branches nulles conserverait au contraire l'entrée par ses additions résiduelles.
+
+Le code ne place pas de dropout supplémentaire juste après chacune des sommes. Les dropouts sont déjà à l'intérieur des sous-modules, avec leurs positions propres. Il faut donc éviter de compléter mentalement ce bloc à partir d'un diagramme de Transformer provenant d'une autre implémentation.
+
+La causalité traverse le bloc : l'attention respecte le masque, puis le FFN et les normalisations agissent séparément à chaque position. Ces dernières opérations peuvent transformer l'information disponible, mais n'introduisent pas de lecture des tokens futurs.
+
+\attention{La présence d'une LayerNorm finale dans MiniGPT ne transforme pas les blocs en pré-normalisation. Il faut examiner l'emplacement des normalisations à l'intérieur de chaque bloc pour nommer correctement l'architecture.}
+
+\exercice{Pour $D=16$, combien de paramètres appartiennent aux deux normalisations d'un bloc ? Si l'attention reçoit $(2,8,16)$, quelle forme la première addition exige-t-elle en sortie ?}
+
+\corrige{Chaque normalisation possède $2D=32$ paramètres, donc 64 pour les deux. La sortie d'attention doit avoir la forme $(2,8,16)$ pour l'addition coordonnée par coordonnée. Ses poids d'attention, de forme $(2,H,8,8)$, ne peuvent pas remplacer cette sortie : ils décrivent une autre étape du calcul.}
+
+\fiche{64}{Traverser MiniGPT de bout en bout}{\src{05_model.py}{MiniGPT.forward}}
+\objectif{Garder une carte des formes depuis les identifiants jusqu'aux scores de vocabulaire et comprendre le rôle des blocs enregistrés.}
+
+\notion{MiniGPT combine des tables d'embeddings, une liste de blocs Transformer, une normalisation finale et une tête de prédiction. Les identifiants d'entrée ne sont jamais directement traités comme des valeurs continues à prédire.}
+
+Pour un appel sans cache, l'entrée est une matrice d'entiers $(B,T)$, avec une séquence non vide et $T\leq C$. La table des tokens produit $(B,T,D)$. En mode appris, les positions $(1,T,D)$ s'ajoutent par diffusion ; en mode RoPE, cette addition est absente. Le dropout agit ensuite sur les représentations obtenues.
+\[
+ (B,T)\longrightarrow(B,T,D)
+ \xrightarrow{L\ \text{blocs}}(B,T,D)
+ \xrightarrow{\text{LayerNorm puis tête}}(B,T,V).
+\]
+Chaque bloc conserve la forme, mais pas le contenu. Le premier peut construire des combinaisons à partir des embeddings ; les suivants travaillent sur des représentations déjà transformées et contextualisées. Conserver une dimension ne signifie donc pas répéter une opération identique.
+
+Les blocs sont rangés dans \code{nn.ModuleList}. Cette structure enregistre leurs paramètres auprès du modèle, pour qu'ils figurent dans \code{parameters()} et \code{state\_dict()}. La boucle de \code{forward} applique explicitement chaque bloc. Les blocs ont la même architecture, mais leurs paramètres sont distincts.
+
+Avec la petite configuration des tests, $B=2$, $T=8$, $D=16$, $L=2$ et $V=23$. Les deux blocs reçoivent et rendent chacun $(2,8,16)$. La normalisation finale conserve cette forme, puis la tête fournit $(2,8,23)$, soit 368 scores. Ces scores sont des activations dépendant des entrées.
+
+L'option \code{verbose} affiche les dimensions au niveau des embeddings, après chaque bloc et à la sortie. Elle aide à localiser une erreur de forme, mais ne demande ni les cartes d'attention ni un diagnostic de qualité linguistique.
+
+\attention{Le modèle valide explicitement le rang et la longueur de l'entrée. Les identifiants doivent aussi être compatibles avec une table d'embeddings : des indices valides, dans le vocabulaire, et un type entier accepté par PyTorch. Une forme correcte ne suffit pas.}
+
+\exercice{Si l'on passe de deux blocs à quatre en conservant toutes les autres dimensions, quelles formes changent ? Le nombre de scores finaux double-t-il ?}
+
+\corrige{Aucune forme extérieure ne change : l'entrée reste $(2,8)$, les représentations $(2,8,16)$ et la sortie $(2,8,23)$. Deux transformations supplémentaires sont exécutées et leurs paramètres s'ajoutent. Le nombre de scores finaux reste 368 ; profondeur du calcul et largeur de la sortie sont deux choix distincts.}
+
+\fiche{65}{La tête produit des logits, pas des probabilités}{\src{05_model.py}{MiniGPT.lm_head}}
+\objectif{Distinguer les scores du vocabulaire de leur normalisation et comprendre l'aplatissement utilisé pour calculer la perte.}
+
+\notion{La tête de langage est une couche affine de largeur d'entrée $D$ et de largeur de sortie $V$. Elle attribue un score réel à chaque token possible, séparément pour chaque position et chaque fenêtre.}
+
+Après \code{final\_norm}, la couche \code{lm\_head} calcule un vecteur de logits. Ils peuvent être négatifs et leur somme n'est pas fixée. Pour une position donnée, on pourrait les convertir en probabilités avec
+\[
+ z=hW_{\mathrm{lm}}^\top+b_{\mathrm{lm}},\qquad
+ p_j=\frac{e^{z_j}}{\sum_{k=0}^{V-1}e^{z_k}}.
+\]
+MiniGPT ne réalise pas ce softmax dans le retour de \code{forward}. Les logits bruts permettent notamment de confier à la fonction de perte un calcul numériquement stable, sans former auparavant des probabilités susceptibles d'être extrêmement petites.
+
+Lorsque \code{targets} est fourni, le code appelle \code{F.cross\_entropy}. Cette fonction attend ici une matrice comportant un exemple par ligne et une cible entière par exemple. Le modèle réunit donc les axes du lot et du temps :
+\[
+ (B,T,V)\longrightarrow(BT,V),\qquad
+ (B,T)\longrightarrow(BT).
+\]
+Les \code{reshape} conservent l'ordre correspondant des positions. Avec $B=2$ et $T=8$, la perte compare seize distributions implicites à seize identifiants cibles. Avec la réduction par défaut et des cibles ordinaires valides, elle moyenne les pertes de ces positions.
+
+Les cibles doivent déjà désigner les tokens à prédire. Cette méthode ne décale pas automatiquement la séquence : le décalage entrée-cible relève de la construction des données. Un appel utilisant les mêmes tokens comme entrée et cible peut vérifier une formule dans un test sans représenter l'objectif habituel de prédiction du prochain token.
+
+Si aucune cible n'est fournie, \code{loss} reste \code{None}. Sans demande de cache, le retour conserve pourtant deux éléments, \code{(logits, loss)} : l'absence de perte ne transforme pas le contrat en retour d'un seul tenseur.
+
+\attention{Un score élevé indique une préférence relative du modèle, pas une certitude factuelle. Ajouter la même constante à tous les logits d'une position laisse leurs probabilités inchangées.}
+
+\exercice{Pour un vocabulaire de deux tokens, les logits valent $(0,\log3)$ et la cible est le second token. Calculez sa probabilité et la perte correspondante.}
+
+\corrige{Les exponentielles valent un et trois : la probabilité cible est $3/4$. La perte vaut $-\log(3/4)=\log(4/3)$. Si la cible était le premier token, elle vaudrait $\log4$. Le softmax intervient conceptuellement dans ce calcul, mais le code transmet directement les logits à l'entropie croisée.}
+
+\fiche{66}{Initialiser : écart-type et poids indépendants}{\src{05_model.py}{MiniGPT._init_weights}}
+\objectif{Lire les paramètres d'initialisation sans confondre variance et écart-type, et repérer les matrices qui ne sont pas partagées.}
+
+\notion{Une initialisation définit les valeurs de départ des paramètres, avant tout apprentissage. Dans MiniGPT, la méthode \code{\_init\_weights} traite les couches linéaires et les tables d'embeddings.}
+
+Le constructeur termine par \code{self.apply(self.\_init\_weights)}, ce qui visite récursivement les sous-modules. Pour chaque \code{nn.Linear} ou \code{nn.Embedding}, les poids sont tirés avec une moyenne nulle et \code{std=0.02}. Les biais des couches linéaires sont mis à zéro.
+\[
+ \mathbb E[W_{ij}]=0,\qquad
+ \text{écart-type}(W_{ij})=0{,}02,\qquad
+ \operatorname{Var}(W_{ij})=(0{,}02)^2=0{,}0004.
+\]
+Écrire seulement une loi normale avec deux nombres sans préciser la convention peut induire en erreur : certains livres utilisent la variance comme second paramètre. Ici, le nom de l'argument Python tranche. Il s'agit bien d'un écart-type de deux centièmes.
+
+Cette règle concerne aussi les projections internes de chaque bloc et les deux couches du FFN. Elle ne réinitialise pas les LayerNorm, dont les paramètres gardent leurs valeurs par défaut : poids multiplicatifs à un et biais à zéro. Les modules dropout et GELU n'ont pas de paramètres à tirer.
+
+La table des tokens et la matrice de la tête de langage ont toutes deux une forme $(V,D)$, mais elles ne sont pas liées. Le constructeur crée séparément \code{token\_embedding} et \code{lm\_head}, sans réaffecter leurs poids à un même paramètre. L'entrée et la sortie possèdent donc chacune leurs $VD$ nombres appris.
+
+Le biais de sortie existe aussi : \code{nn.Linear(embedding\_dim, vocab\_size)} utilise un biais par défaut, de taille $V$. Le compter reste nécessaire même lorsqu'il est initialement nul ; zéro décrit une valeur, pas l'absence d'un paramètre.
+
+\attention{Des tirages provenant de la même loi ne donnent pas des matrices identiques. Les moyennes et variances d'une petite matrice effectivement tirée ne sont pas nécessairement exactement celles de la loi théorique. Aucun résultat d'entraînement ne découle à lui seul de cette initialisation.}
+
+\exercice{Avec $V=23$ et $D=16$, combien de paramètres appartiennent à la table des tokens et à la tête réunies ? Combien en retirerait un partage hypothétique des poids, sans retirer le biais ?}
+
+\corrige{La table contient 368 paramètres ; la tête en contient $368+23=391$. Le total réel est donc 759. Un partage hypothétique supprimerait une matrice indépendante de 368 paramètres, laissant 391 paramètres uniques pour cet ensemble. Ce partage n'est pas réalisé dans MiniGPT.}
+
+\fiche{67}{Compter tous les paramètres}{\src{05_model.py}{MiniGPT.count_parameters}}
+\objectif{Établir une formule contrôlable qui inclut les biais et les normalisations, puis l'appliquer à la configuration minuscule des tests.}
+
+\notion{Compter les paramètres revient à additionner le nombre d'éléments des tenseurs entraînables enregistrés. Les activations temporaires, les scores d'attention et les caches ne sont pas des paramètres.}
+
+Dans un bloc, les projections $Q$, $K$, valeurs et sortie constituent quatre couches affines $D\to D$. Elles totalisent $4D^2+4D$ nombres. Les deux couches du FFN apportent $DF+F$ puis $FD+D$. Les deux LayerNorm apportent chacune $2D$.
+\[
+ P_{\mathrm{bloc}}=4D^2+2DF+9D+F,\qquad
+ P=2VD+I_{\mathrm{appris}}CD+L P_{\mathrm{bloc}}+2D+V.
+\]
+Ici, $I_{\mathrm{appris}}$ vaut un pour les positions apprises et zéro pour RoPE. Le terme $2VD$ compte séparément embeddings de tokens et poids de sortie. Le dernier $2D$ correspond à la normalisation finale ; le dernier $V$ au biais de la tête. Ni RoPE ni le choix manuel/SDPA n'ajoutent de matrice entraînable.
+
+Appliquons la formule à $V=23$, $C=8$, $D=16$, $H=4$, $L=2$ et $F=32$, la configuration de base des tests. Un bloc contient $1024$ paramètres matriciels d'attention, $1024$ paramètres matriciels de FFN, puis $144+32=176$ autres paramètres : au total 2224.
+\[
+ P_{\mathrm{appris}}
+ =736+128+2\times2224+32+23=5367,
+ \qquad P_{\mathrm{RoPE}}=5367-128=5239.
+\]
+On peut vérifier autrement : 1088 pour les quatre affinités d'attention, 1072 pour le FFN et 64 pour les deux normalisations donnent bien 2224 par bloc. Cette décomposition est utile pour repérer l'oubli fréquent des biais ou des coefficients multiplicatifs de normalisation.
+
+À largeur $D$ fixe, $H$ n'apparaît pas dans la formule. Changer le découpage des têtes ne change pas la taille des matrices de projection. Cela peut néanmoins changer les calculs, la mémoire des scores et les contraintes de validité.
+
+La méthode \code{count\_parameters} additionne \code{param.numel()} pour chaque paramètre enregistré. Elle fournit donc un contrôle direct de cette comptabilité. Le nombre de fenêtres et la longueur effectivement traitée n'interviennent pas : réutiliser davantage de fois une même matrice ne crée pas de nouveaux coefficients.
+
+\attention{Une estimation de mémoire en octets demande aussi le type numérique et les autres objets conservés. Multiplier ce seul total par la taille d'un nombre ne compte ni gradients, ni état d'optimiseur, ni activations.}
+
+\exercice{Dans cette configuration avec positions apprises, quel total obtient-on avec trois blocs ? Et avec deux blocs mais $C=16$ ?}
+
+\corrige{Ajouter un bloc ajoute 2224 paramètres : $5367+2224=7591$. Doubler seulement le contexte ajoute huit lignes positionnelles de seize nombres, soit 128 paramètres : le total devient 5495. En mode RoPE, cette modification de $C$ n'ajouterait aucun paramètre positionnel appris.}
+
+\fiche{68}{RoPE : tourner une paire de coordonnées}{\src{03_attention.py}{MultiHeadSelfAttention._apply_rope}}
+\objectif{Comprendre RoPE à partir des rotations du plan étudiées avec le sinus et le cosinus, sans recourir aux nombres complexes.}
+
+\notion{RoPE encode la position en tournant des paires de coordonnées des requêtes et des clés. Contrairement aux positions apprises, il n'ajoute pas un vecteur positionnel à l'embedding du token.}
+
+Pour une paire $(a,b)$ et un angle $\theta$, la rotation utilisée dans le code donne
+\[
+ R_\theta(a,b)=
+ (a\cos\theta-b\sin\theta,\ a\sin\theta+b\cos\theta).
+\]
+Les coordonnées d'indices pairs sont extraites dans \code{even}, celles d'indices impairs dans \code{odd}. La fonction calcule les deux nouvelles composantes, les empile puis les aplatit pour reconstituer l'ordre des paires adjacentes. Une tête de dimension quatre contient donc les paires d'indices $(0,1)$ et $(2,3)$.
+
+Pourquoi parler de rotation ? Développons la somme des carrés des composantes obtenues. Les termes croisés se compensent et $\cos^2\theta+\sin^2\theta=1$, d'où
+\[
+ (a\cos\theta-b\sin\theta)^2+
+ (a\sin\theta+b\cos\theta)^2=a^2+b^2.
+\]
+La longueur de la paire est conservée en arithmétique exacte. RoPE change son orientation, pas sa norme. En calcul flottant, on attend cette propriété à l'arrondi près, pas comme une identité bit à bit pour tous les angles.
+
+Pour $\theta=0$, le vecteur reste inchangé. Pour $\theta=\pi/2$, $(1,0)$ devient $(0,1)$. Ces angles simples aident à comprendre la transformation ; le code utilise cependant des angles définis par les positions entières et les fréquences, pas nécessairement des multiples de $\pi/2$.
+
+Dans le test de rotation connue, une tête de dimension deux reçoit la paire $(1,0)$ avec un décalage de trois. Sa fréquence vaut un, donc l'angle vaut trois radians. Le résultat attendu est $(\cos3,\sin3)$, et non une permutation simple.
+
+\attention{Les valeurs d'attention ne sont pas tournées. Seules les requêtes et les clés passent dans \code{\_apply\_rope}. La dimension $d_k$ doit être paire ; une largeur totale $D$ paire ne suffit pas si son quotient par le nombre de têtes est impair.}
+
+\exercice{Une paire vaut $(3,4)$. Calculez sa rotation d'angle $\pi/2$ et comparez les carrés des normes. La configuration $D=12$, $H=4$ convient-elle à RoPE ?}
+
+\corrige{La paire devient $(-4,3)$. Les deux carrés des normes valent $3^2+4^2=25$. La configuration proposée donne $d_k=3$, impair : elle est refusée pour RoPE, même si douze est divisible par quatre et conviendrait aux positions apprises.}
+
+\fiche{69}{Fréquences, distance relative et décalage}{\src{03_attention.py}{MultiHeadSelfAttention._apply_rope}}
+\objectif{Relier les angles RoPE à la position et comprendre ce que signifie leur dépendance relative, sans promettre un contexte illimité.}
+
+\notion{Toutes les paires d'une tête ne tournent pas à la même vitesse. Le code attribue une fréquence à chaque paire, puis multiplie cette fréquence par la position globale du token.}
+
+Si $r$ numérote les paires à partir de zéro, les expressions utilisées sont
+\[
+ \omega_r=10000^{-2r/d_k},\qquad
+ \theta_{m,r}=m\omega_r,\qquad 0\leq r<d_k/2.
+\]
+Pour $d_k=4$, les fréquences sont un et $1/100$. À la position trois, les angles valent donc trois radians et trois centièmes de radian. Certaines paires changent rapidement d'orientation, d'autres plus lentement. Ces fréquences sont calculées par une formule fixe, sans paramètres appris.
+
+La propriété relative apparaît dans le produit scalaire entre une requête tournée à la position $m$ et une clé tournée à la position $n$. Pour une paire et une fréquence $\omega$,
+\[
+ \langle R_{m\omega}q,R_{n\omega}k\rangle
+ =\langle q,R_{(n-m)\omega}k\rangle.
+\]
+Tourner les deux vecteurs du même angle ne change pas leur produit scalaire ; il reste leur rotation relative. Cette égalité explique comment le décalage entre positions intervient dans les scores. Elle ne signifie pas que le score dépend uniquement de la distance : les contenus $q$ et $k$ comptent toujours.
+
+Avec un cache de longueur $p$, la fonction crée les positions de $p$ à $p+T-1$. Les nouvelles requêtes et clés sont tournées à ces positions. Les clés anciennes stockées dans le cache sont déjà tournées et ne doivent pas subir la transformation une seconde fois.
+
+Le calcul des fréquences et angles utilise des nombres en \code{float32}, puis sinus et cosinus sont convertis vers le type du tenseur. Cette précision fait partie des détails à considérer lorsque l'on compare des calculs sous précision réduite.
+
+\attention{L'absence de table positionnelle apprise ne supprime pas la limite de contexte imposée par \code{MiniGPT.forward}. L'identité relative ne prouve ni une bonne extrapolation à des distances inédites, ni l'absence d'erreurs numériques pour des positions très grandes.}
+
+\exercice{Pour $d_k=4$, un cache contient cinq tokens et l'on ajoute deux tokens. Quels angles la seconde paire utilise-t-elle ? Pourquoi repartir de zéro serait-il incorrect ?}
+
+\corrige{Les positions nouvelles sont cinq et six ; avec la fréquence $1/100$, les angles valent $0{,}05$ et $0{,}06$ radian. Repartir de zéro donnerait zéro et $0{,}01$ : les nouvelles clés seraient placées dans un repère incompatible avec les anciennes clés déjà tournées. Les distances représentées ne correspondraient plus à la séquence.}
+
+\fiche{70}{SDPA : même calcul, contrat de masque différent}{\src{03_attention.py}{MultiHeadSelfAttention.forward}}
+\objectif{Identifier les conditions d'utilisation de SDPA, la convention de son masque et le maintien exact de la place du dropout.}
+
+\notion{SDPA est l'interface PyTorch de calcul d'attention par produit scalaire mis à l'échelle. Son implémentation effective dépend du matériel et des opérations disponibles ; demander SDPA ne prouve pas qu'un noyau accéléré particulier est utilisé.}
+
+La branche du dépôt est prise si \code{attention\_backend} vaut \code{'sdpa'}, si les poids ne sont pas demandés et si la fonction correspondante existe dans \code{torch.nn.functional}. Sinon, le calcul manuel reste disponible.
+
+Sans passé non vide, le code transmet un masque nul et \code{is\_causal=True}. Avec un cache non vide, il construit un masque rectangulaire tenant compte des positions globales. Attention au sens des booléens : dans l'interface SDPA, vrai signifie \emph{autorisé}, alors que le masque manuel utilise vrai pour \emph{interdit}.
+\[
+ M_{\mathrm{manuel}}(i,j)=(j>p+i),\qquad
+ M_{\mathrm{SDPA}}=\neg M_{\mathrm{manuel}}.
+\]
+Le code applique donc \code{\textasciitilde mask}. Avec trois tokens en cache et deux requêtes nouvelles, le masque SDPA contient une première ligne $(\mathrm{V},\mathrm{V},\mathrm{V},\mathrm{V},\mathrm{F})$, puis une ligne entièrement vraie. Il utilise alors \code{is\_causal=False}, puisque la causalité est déjà exprimée explicitement.
+
+Autre détail central : l'appel SDPA reçoit toujours \code{dropout\_p=0.0}, même pendant l'entraînement. Il ne supprime donc aucun poids d'attention. Le dropout configuré dans le module reste appliqué à la sortie fusionnée, avant \code{out\_proj}, comme dans le chemin manuel.
+
+Sur processeur, PyTorch peut choisir son implémentation mathématique quand les noyaux fusionnés ne conviennent pas. Si l'appel lève \code{RuntimeError} ou \code{NotImplementedError}, ce code autorise en plus un repli manuel sur CPU. Pour ces exceptions sur un autre type de périphérique, il relance l'erreur plutôt que de la masquer.
+
+\attention{Demander \code{return\_attention=True} contourne SDPA et calcule explicitement les poids. Des résultats proches entre moteurs n'impliquent ni une égalité bit à bit générale, ni un gain de vitesse mesuré. L'ordre des opérations flottantes peut différer.}
+
+\exercice{Une requête globale trois consulte cinq clés, numérotées de zéro à quatre. Écrivez ses deux masques booléens et indiquez le taux de dropout transmis à SDPA si le module est entraîné avec un taux de $0{,}2$.}
+
+\corrige{Le masque manuel est $(\mathrm{F},\mathrm{F},\mathrm{F},\mathrm{F},\mathrm{V})$ ; celui de SDPA est son inverse. SDPA reçoit toujours zéro comme taux. Le dropout de $0{,}2$ est maintenu ailleurs, après fusion des têtes et avant projection ; il n'est donc pas désactivé dans l'ensemble du module.}
+
+\fiche{71}{Le cache KV : un contrat d'inférence}{\src{03_attention.py}{MultiHeadSelfAttention._validate_past_key_value}}
+\objectif{Savoir ce qu'un cache contient, ce que le modèle vérifie et comment fournir uniquement les tokens nouveaux sans changer le calcul causal.}
+
+\notion{Le cache mémorise les clés et les valeurs déjà calculées dans chaque couche. Les anciennes requêtes ne sont pas nécessaires pour traiter les nouvelles positions : seules les nouvelles requêtes consultent les clés disponibles.}
+
+Pour $L$ couches et un passé de longueur $p$, \code{past\_key\_values} contient une paire par couche. Chaque paire possède deux tenseurs :
+\[
+ K_{\mathrm{cache}},V_{\mathrm{cache}}\in
+ \mathbb{R}^{B\times H\times p\times d_k},
+ \qquad p+T\leq C.
+\]
+Le modèle exige une liste ou un tuple contenant exactement autant de paires que de blocs. Chaque paire doit contenir deux tenseurs de rang quatre. Le lot, le nombre de têtes et la dimension de tête doivent correspondre au module. Les clés et valeurs doivent avoir les mêmes formes et le même type numérique.
+
+Les tenseurs doivent être flottants et sur le même périphérique que l'entrée. Une vérification plus bas, après projection, exige aussi le même type que les nouvelles clés et valeurs. Toutes les couches doivent partager la même longueur passée ; un cache partiellement tronqué dans une seule couche est rejeté.
+
+Dans MiniGPT, utiliser ou demander un cache impose le mode \code{eval()} et l'absence de cibles. L'appelant doit fournir seulement les nouveaux tokens. Le modèle rejette une entrée de longueur nulle et le dépassement de $C$ ; la politique de génération pour gérer une fenêtre pleine est étudiée dans les fiches suivantes du manuel.
+
+Avec \code{use\_cache=True}, le retour du modèle est \code{(logits, loss, cache)}, où la perte vaut \code{None} dans cet usage. Fournir un cache sans demander son retour reste permis : on reçoit alors seulement \code{(logits, loss)}. En mode RoPE, les clés mémorisées sont déjà tournées.
+
+\attention{\code{eval()} modifie notamment le dropout, mais ne désactive pas à lui seul le suivi des gradients. L'inférence utilise habituellement aussi \code{torch.no\_grad()}. Les vérifications structurelles ne prouvent pas qu'un cache vient des bons tokens ou des mêmes poids : cette cohérence reste à la charge de l'appelant.}
+
+\exercice{Pour $B=2$, $H=4$, $d_k=4$, $L=2$ et $p=3$, combien de nombres le cache contient-il ? Quelle forme prend chaque tenseur après deux nouveaux tokens ?}
+
+\corrige{Chaque tenseur contient $2\times4\times3\times4=96$ nombres. Deux tenseurs par couche et deux couches donnent 384 nombres. Après l'appel, chaque tenseur a la forme $(2,4,5,4)$, et le cache total contient 640 nombres. Ce sont des activations conservées, pas de nouveaux paramètres entraînables.}
+
+\fiche{72}{Ce que vérifient réellement les tests}{\src{tests/test_model.py}{ModelTests}}
+\objectif{Relier les garanties des tests aux calculs étudiés, en séparant compatibilité numérique, contrats d'interface et qualité du modèle.}
+
+\notion{Un test compare un comportement observé à une attente précise, sur des configurations déterminées. Il peut détecter une régression ; il ne prouve pas toutes les propriétés imaginables du réseau.}
+
+\code{test\_default\_state\_dict\_and\_legacy\_forward} vérifie les noms des paramètres, charge strictement un clone, puis reconstruit le calcul historique. Il reproduit notamment le dropout avant projection et les deux normalisations post-résiduelles. La comparaison des logits utilise \code{rtol=0} et \code{atol=0}, avec la graine réinitialisée pour reproduire les tirages de dropout.
+
+\code{test\_cached\_chunks\_match\_full\_sequence} compare un passage complet aux découpages en huit tokens isolés ou en morceaux de longueurs trois, deux et trois. Il couvre les deux encodages et les deux moteurs. Il contrôle aussi les formes des caches. Les logits sont comparés avec une tolérance absolue de $2\times10^{-7}$ et relative de $10^{-5}$.
+
+Une comparaison approchée combine généralement les deux échelles :
+\[
+ |a-b|\leq \mathrm{atol}+\mathrm{rtol}\,|b|.
+\]
+La partie absolue compte près de zéro ; la partie relative accompagne la taille de la valeur de référence. L'égalité attendue est donc plus précise que simplement « les nombres ont l'air proches ».
+
+\code{test\_sdpa\_masks\_and\_attention\_weights} vérifie le masque rectangulaire autorisé, l'absence d'appel SDPA quand les poids sont demandés, le poids futur nul et les sommes de lignes égales à un. Ce contrôle teste une manifestation concrète de causalité, sans constituer une preuve générale sur toutes les entrées.
+
+\code{test\_sdpa\_training\_dropout\_and\_gradients\_match\_manual} compare aussi les gradients, avec tolérance absolue $2\times10^{-7}$ et relative $10^{-4}$. Les poids sont partagés par chargement et les graines synchronisées. \code{test\_autocast\_cache\_dtype} utilise des tolérances plus larges, $0{,}002$ et $0{,}02$, adaptées à son calcul en précision réduite.
+
+\attention{Les tests de rotation, de repli CPU, de cache invalide, d'inférence seule et de configuration invalide complètent ces contrôles. Ils ne mesurent ni vitesse, ni perplexité après entraînement, ni qualité des textes. Aucun succès d'exécution n'est présumé ici.}
+
+\exercice{Deux implémentations donnent des sorties proches, mais l'une place son dropout après la projection. Pourquoi une comparaison en évaluation ne suffit-elle pas à valider cette modification ?}
+
+\corrige{En évaluation, les deux dropouts sont inactifs : leur emplacement peut devenir invisible. Il faut comparer le comportement en entraînement avec mêmes paramètres et tirages contrôlés, puis les gradients si l'apprentissage est concerné. Une bonne vérification cible le mécanisme susceptible de différer, pas seulement la forme finale.}
